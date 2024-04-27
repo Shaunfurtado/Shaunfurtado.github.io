@@ -1,17 +1,11 @@
 import Link from "next/link";
 import React from "react";
-import Particles from "./components/particles";
 
 export default function Page() {
   return (
-    
     <section>
       <h1 className="font-medium text-2xl mb-8 tracking-tighter">Hey I&apos;m Shaun</h1>
       <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
-      <Particles
-        className="absolute inset-0 -z-10 animate-fade-in"
-        quantity={200}
-      />
       <p className="prose prose-neutral dark:prose-invert">
         This is your new portfolio.
       </p>

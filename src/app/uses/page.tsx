@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import React from "react";
-import Particles from "../components/particles";
 
 export const metadata: Metadata = {
   title: 'Uses',
@@ -12,10 +11,6 @@ export default function UsesPage() {
   return (
     
     <section>
-      <Particles
-        className="absolute inset-0 -z-10 animate-fade-in"
-        quantity={200}
-      />
       <h1 className="font-medium text-2xl mb-8 tracking-tighter">
         heres my setup
       </h1>

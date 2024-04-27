@@ -1,17 +1,20 @@
 import React from "react";
-import Particles from "../components/particles";
 
 export default function Page() {
     return (
       <section>
-        <Particles
-        className="absolute inset-0 -z-10 animate-fade-in"
-        quantity={200}
-      />
-        <h1 className="font-medium text-2xl mb-8 tracking-tighter">my projects</h1>
-        <p className="prose prose-neutral dark:prose-invert">
-          This is where your projects goes goes.
-        </p>
+        <h1 className="font-medium text-2xl mb-8 tracking-tighter">My Projects</h1>
+        <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
+        <ul>
+          <li>Twitter crypto bot</li>
+          <li>This personal portfolio</li>
+          <li>Code blogs for code snippets and notes management</li>
+          <li>Personal blogging site with hugo</li>
+          <li>Flowchain blockchain supply chain management</li>
+          <li>hotel management system</li>
+          <li>Kickstartup: Crowdfunding With blogs</li>
+          <li>Java GUI text editor</li>
+        </ul>
       </section>
     );
   }
