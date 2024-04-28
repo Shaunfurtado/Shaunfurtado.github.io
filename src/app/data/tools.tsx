@@ -30,11 +30,6 @@ export const tools = [
     href: 'https://www.figma.com/',
   },
   {
-    title: 'Gimp',
-    Icon: SiGimp,
-    href: 'https://www.gimp.org/',
-  },
-  {
     title: 'Blender',
     Icon: TbBrandBlender,
     href: 'https://www.blender.org/',

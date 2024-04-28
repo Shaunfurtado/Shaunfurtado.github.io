@@ -1,10 +1,12 @@
 import React from "react";
-import Link from 'next/link';
+import { socialMediaLinks } from '@/app/data/socialMediaLinks';
+import SocialLinks from '../components/socialLinks'; 
+
 
 export default function Page() {
   return (
     <section>
-      <h1 className="font-medium text-2xl mb-8 tracking-tighter">Experience and Achievements</h1>
+      <h1 className="font-medium text-2xl mb-8 tracking-tighter">Experience</h1>
       <div className="prose prose-neutral dark:prose-invert">
         <p>
           On a mission to build products people love, and along the
@@ -67,6 +69,8 @@ export default function Page() {
 </p>
 
       </div>
+      <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
+      <SocialLinks links={socialMediaLinks} />
     </section>
   );
 }

@@ -13,7 +13,7 @@ interface TechIUseProps {
 
 export const TechIUse = ({ tech }: TechIUseProps) => {
   return (
-    <section className="mt-10 px-4">
+    <section className="mt-2 px-4">
       <div className="mt-5 grid grid-cols-3 gap-2 sm:grid-cols-5">
         {tech.map((techItem, index) => (
           <TechCard key={index} {...techItem} />

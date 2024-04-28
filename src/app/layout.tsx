@@ -3,8 +3,6 @@ import Particles from "./components/particles";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { Navbar } from './components/nav';
-import { socialMediaLinks } from '@/app/data/socialMediaLinks';
-import SocialLinks from './components/socialLinks'; 
 
 
 const inter = Inter({ subsets: ["latin"] });
@@ -46,7 +44,6 @@ export default function RootLayout({
       />
           <Navbar />
           {children}
-          <SocialLinks links={socialMediaLinks} />
         </main>
       </body>
     </html>

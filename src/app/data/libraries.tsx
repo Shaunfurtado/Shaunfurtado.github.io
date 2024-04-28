@@ -1,5 +1,5 @@
 import { IoLogoNodejs } from 'react-icons/io5';
-import { SiExpress, SiSqlite, SiDrizzle  } from "react-icons/si";
+import { SiExpress, SiSqlite, SiDrizzle, SiPostgresql   } from "react-icons/si";
 import {
   TbBrandNextjs,
   TbBrandReact,
@@ -54,4 +54,9 @@ export const libraries = [
     Icon: SiDrizzle ,
     href: 'https://www.trufflesuite.com/drizzle',
   },
+  {
+    title: 'PostgreSQL',
+    Icon: SiPostgresql ,
+    href: 'https://www.postgresql.org/',
+  }
 ];

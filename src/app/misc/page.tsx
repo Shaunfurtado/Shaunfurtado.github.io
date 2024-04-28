@@ -17,11 +17,11 @@ export default function UsesPage() {
       <div className="prose prose-neutral dark:prose-invert">
         <h3 id="computer-office">Computer</h3>
         <ul>
-          <li>14&quot; Asus Vivobook Pro 14 oled (2021)</li>
+          <li>14&quot; Asus Vivobook Pro 14 Oled (2021)</li>
           <li>Logitech Mouse</li>
           <li>Evofox Fireblade TKL 65% Keyboard</li>
-          <li>Windows 11 & Manjaro(btw)</li>
-          
+          <li>KZ ZSN pro X</li>
+          <li>Windows 11 & Manjaro(by the way)</li>
         </ul>
         <h3 id="coding">Coding</h3>
         <ul>
@@ -32,23 +32,19 @@ export default function UsesPage() {
             </a>
             )
           </li>
-          <li>Theme: One Dark Pro</li>
-          <li>CHarm</li>
+          <li>Theme: Tokyo Night</li>
+          <li>Charm</li>
         </ul>
         <h3 id="software">Software</h3>
         <ul>
-          <li>ARC Browser</li>
+          <li>Arc Browser</li>
           <li>Spotify</li>
           <li>CapCut</li>
           <li>Localsend</li>
           <li>Ollama</li>
           <li>OBS studio</li>
           <li>Figma</li>
-        </ul>
-        <h3 id="other-tech">Other Tech</h3>
-        <ul>
-          <li>KZ ZSN pro X</li>
-          <li>Oneplus Watch</li>
+          <li>Cloudfare Warp</li>
         </ul>
       </div>
     </section>
