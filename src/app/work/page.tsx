@@ -1,4 +1,5 @@
 import React from "react";
+import Link from 'next/link';
 import { socialMediaLinks } from '@/app/data/socialMediaLinks';
 import SocialLinks from '../components/socialLinks'; 
 
@@ -70,7 +71,16 @@ export default function Page() {
 
       </div>
       <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
-      <SocialLinks links={socialMediaLinks} />
+      <div className="flex flex-row justify-between items-center mt-0">
+          <SocialLinks links={socialMediaLinks} />
+          <div className="flex justify-end">
+          <Link href='/contact'>
+              <div className="h-12 md:h-10 flex flex-col items-center justify-center space-y-2 font-semibold border-[1px] border-none bg-white/5 p-4 text-sm md:text-base rounded-md shadow-md hover:shadow-rose-500/40 active:translate-y-[2px] transition-all duration-300 ease-out">
+                <span className="whitespace-nowrap">Contact Me</span>
+              </div>
+          </Link>
+          </div>
+        </div>
     </section>
   );
 }

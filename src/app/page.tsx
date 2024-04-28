@@ -24,7 +24,7 @@ export default function Page() {
           This is my new portfolio.
         </p>
         <p className="p-4 ">i dont have much of a intro but you can check out my{' '}
-          <a href="/misc">misc</a> to know more about me and some random stuff.
+          <i><b><a href="/misc">misc</a></b></i> to know more about me and some random stuff.
         </p>
         <p>
           On a mission to build products developers{' '}
@@ -43,39 +43,41 @@ export default function Page() {
         <h2 className="font-medium text-xl mb-1 tracking-tighter">Achievements :</h2>
         <ul className="list-disc pl-6 p-4">
           <li>
-            Runner up in the 2021 Hackathon at my college.
+            <b>2022 SJEC Premiere Hackathon:</b> Achieved runner-up position in the medical category, demonstrating my ability to apply tech solutions in healthcare.
           </li>
           <li>
-            Runner up in the 2023 Hackathon at my college.
+            <b>HacktoFuture by EGDK and SJEC, 2023:</b> Secured the runner-up spot under the finance category, showcasing my skills in financial technology solutions.
           </li>
           <li>
-            secured internship at snh in Karpine limited.
+            <b>Smart Nitte Hackathon:</b> Earned an internship opportunity at Karpine Limited, a renowned blockchain company, by demonstrating my proficiency in blockchain technology.
           </li>
         </ul>
         <h2 className="font-medium text-xl mb-1 tracking-tighter">Certifications :</h2>
         <ul className="list-disc pl-6 p-4">
           <li>
-            Google data analytics professional certificate(coursera)
+            <b>Google Data Analytics Professional Certificate:</b> Acquired a comprehensive understanding of data analytics via Coursera.
           </li>
           <li>
-            Salesforce Administrator Certication
+            <b>Salesforce Administrator Certification:</b> Demonstrated expertise in Salesforce administration, enhancing my skills in CRM platforms.
           </li>
           <li>
-          html, css js certification from coursera
+            <b>Data Structures, University of California San Diego:</b> Gained a solid foundation in data structures through a course on Coursera, strengthening my problem-solving skills.
+          </li>
+          <li>
+            <b>HTML, CSS, and Javascript for Web Developers, Johns Hopkins University:</b> Developed a strong grasp of web development fundamentals through this Coursera course.
           </li>
         </ul>
         <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
         <div className="flex flex-row justify-between items-center mt-0">
-  <SocialLinks links={socialMediaLinks} />
-  <div className="flex justify-end">
-    <a href='/contact' target="_blank" rel="noopener noreferrer"> 
-      <div className="h-12 md:h-10 flex flex-col items-center justify-center space-y-2 font-semibold border-[1px] border-none bg-white/5 p-4 text-sm md:text-base rounded-md shadow-md hover:shadow-rose-500/40 active:translate-y-[2px] transition-all duration-300 ease-out">
-        <span className="whitespace-nowrap">Contact Me</span>
-      </div>
-    </a>
-  </div>
-</div>
-
+          <SocialLinks links={socialMediaLinks} />
+          <div className="flex justify-end">
+          <Link href='/contact'>
+              <div className="h-12 md:h-10 flex flex-col items-center justify-center space-y-2 font-semibold border-[1px] border-none bg-white/5 p-4 text-sm md:text-base rounded-md shadow-md hover:shadow-rose-500/40 active:translate-y-[2px] transition-all duration-300 ease-out">
+                <span className="whitespace-nowrap">Contact Me</span>
+              </div>
+          </Link>
+          </div>
+        </div>
     </section>
   );
 }
