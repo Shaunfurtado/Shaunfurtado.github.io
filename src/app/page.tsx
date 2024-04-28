@@ -6,7 +6,7 @@ import { libraries } from '@/app/data/libraries';
 import { tools } from '@/app/data/tools';
 import { socialMediaLinks } from '@/app/data/socialMediaLinks';
 import SocialLinks from './components/socialLinks'; 
-import { ProfileImage } from "./components/progileImage";
+import { ProfileImage } from "./components/profileImage";
 import { contactme } from "./data/contactme";
 
 export default function Page() {

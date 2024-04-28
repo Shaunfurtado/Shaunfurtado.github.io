@@ -14,7 +14,7 @@ export default function Page() {
           <input type="text" name="name" required className="p-4 mb-2 border-b border-gray-300 transition ease-in-out duration-500 focus:outline-none focus:border-black focus:shadow-none" placeholder="Your Name" />
           <input type="email" name="email" required className="p-4 mb-2 border-b border-gray-300 transition ease-in-out duration-500 focus:outline-none focus:border-black focus:shadow-none" placeholder="Your E-mail" />
           <textarea name="message" required  className="p-4 mb-2 border-b border-gray-300 transition ease-in-out duration-500 focus:outline-none focus:border-black focus:shadow-none" placeholder="Your Message"></textarea>
-          <input type="hidden" name="redirect" value="https://yourwebsite.com/thanks.html" />
+          <input type="hidden" name="redirect" value="https://shaunfurtado.is-a.dev/thanks" />
           <button type="submit" className="h-22 md:h-20 px-4 py-2 flex flex-col items-center justify-center space-y-2 font-semibold border-[1px] border-none bg-white/5 p-4 text-sm rounded-md shadow-md hover:shadow-rose-500/40 active:translate-y-[2px] transition-all duration-300 ease-out">
             <SendHorizontal className="mr-2" />
             Submit Message
