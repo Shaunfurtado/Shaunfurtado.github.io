@@ -4,7 +4,7 @@ import Link from 'next/link';
 export default function Page() {
   return (
     <section>
-      <h1 className="font-medium text-2xl mb-8 tracking-tighter">My Experience and Achievements</h1>
+      <h1 className="font-medium text-2xl mb-8 tracking-tighter">Experience and Achievements</h1>
       <div className="prose prose-neutral dark:prose-invert">
         <p>
           On a mission to build products people love, and along the
