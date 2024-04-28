@@ -23,7 +23,7 @@ export const ProfileImage = ({
         } ${isInteractive ? 'transition duration-300 group-hover:scale-105' : ''}`}
       >
         <Image
-          src="/public/images/photo_2022-10-22_22-32-59.jpg"
+          src="https://avatars.githubusercontent.com/u/91174227?v=4"
           alt="A picture of Shaun"
           priority
           className="rounded-full"

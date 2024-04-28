@@ -1,5 +1,3 @@
-import { Mail } from 'lucide-react';
-
 export const socialMediaLinks = [
     {
       name: 'Github',
@@ -43,10 +41,5 @@ export const socialMediaLinks = [
           <circle cx="4" cy="4" r="2" />
         </svg>
       ),
-    },
-    {
-      name: 'Mail',
-      href: 'mailto:shaunf1801@gmail.com',
-      icon: <Mail size={20} />,
     },
   ];
