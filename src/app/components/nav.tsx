@@ -2,17 +2,18 @@ import Link from 'next/link';
 
 const navItems = {
   '/': {
-    name: 'home',
+    name: 'Home',
   },
   '/projects': {
-    name: 'projects',
+    name: 'Projects',
   },
-  '/about': {
-    name: 'about',
+  '/work': {
+    name: 'Experience',
   },
-  // '/blog': {
-  //   name: 'blog',
-  // },
+  '/contact': {
+    name: 'Contact',
+  },
+  
   // '/guestbook': {
   //   name: 'guestbook',
   // },

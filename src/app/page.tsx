@@ -1,5 +1,10 @@
 import Link from "next/link";
 import React from "react";
+import { TechIUse } from "@/app/components/tech-i-use";
+import { languages } from '@/app/data/languages';
+import { libraries } from '@/app/data/libraries';
+import { tools } from '@/app/data/tools';
+
 
 export default function Page() {
   return (
@@ -7,43 +12,25 @@ export default function Page() {
       <h1 className="font-medium text-2xl mb-8 tracking-tighter">Hey I&apos;m Shaun</h1>
       <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
       <p className="prose prose-neutral dark:prose-invert">
-        This is your new portfolio.
+        This is my new portfolio.
       </p>
-      <ul className="font-sm mt-8 flex flex-col space-x-0 space-y-2 text-neutral-600 md:flex-row md:space-x-4 md:space-y-0 dark:text-neutral-300">
-        <li>
-          <a
-            className="flex items-center transition-all hover:text-neutral-800 dark:hover:text-neutral-100"
-            rel="noopener noreferrer"
-            target="_blank"
-            href="https://github.com/Shaunfurtado"
-          >
-            <p className="ml-2 h-7">Github</p>
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" className="lucide lucide-move-up-right"><path d="M13 5H19V11"/><path d="M19 5L5 19"/></svg>
-          </a>
-        </li>
-        <li>
-          <a
-            className="flex items-center transition-all hover:text-neutral-800 dark:hover:text-neutral-100"
-            rel="noopener noreferrer"
-            target="_blank"
-            href="https://leerob.substack.com"
-          >
-            <p className="ml-2 h-7">Twitter</p>
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" className="lucide lucide-move-up-right"><path d="M13 5H19V11"/><path d="M19 5L5 19"/></svg>
-          </a>
-        </li>
-        <li>
-          <a
-            className="flex items-center transition-all hover:text-neutral-800 dark:hover:text-neutral-100"
-            rel="noopener noreferrer"
-            target="_blank"
-            href="https://leerob.substack.com"
-          >
-            <p className="ml-2 h-7">Linkedin</p>
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" className="lucide lucide-move-up-right"><path d="M13 5H19V11"/><path d="M19 5L5 19"/></svg>
-          </a>
-        </li>
-      </ul>
+      <p className="p-4 ">i dont have much of a intro but you can check out my{' '}
+        <a href="/misc">misc</a> to know more about me and some random stuff.
+      </p>
+      <p>
+          On a mission to build products developers{' '}
+          <Link href="/blog/developer-experience">love</Link>, and along the
+          way, teach the next generation of developers. Heres a summary of my
+          work so far.
+        </p>
+      <h2 className="pt-6">Tech Stack that i use:</h2>
+      <h3 className="pt-6">Languages</h3>
+      <TechIUse tech={languages} />
+      <h3 className="pt-6">Frameworks / Libraries</h3>
+      <TechIUse tech={libraries} />
+      <h3 className="pt-6">Tools</h3>
+      <TechIUse tech={tools} />
+      <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
     </section>
   );
 }
