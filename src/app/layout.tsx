@@ -26,12 +26,10 @@ export const metadata: Metadata = {
 
 export default function RootLayout({
   children,
+  
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  if (typeof window !== 'undefined') {
-    console.log('OOPs');
-  }
 
 
   return (
@@ -40,10 +38,16 @@ export default function RootLayout({
         <main className="flex-auto min-w-0 mt-6 flex flex-col px-2 md:px-0">
         <Particles
         className="absolute inset-0 -z-10 animate-fade-in"
-        quantity={200}
+        quantity={300}
       />
           <Navbar />
           {children}
+          <footer className="text-center py-4 text-sm">
+            © 2024 Shaun Furtado. <b><a href="https://github.com/Shaunfurtado/Shaunfurtado.github.io"
+            className="underline underline-offset-4 hover:no-underline font-bold transition duration-300 transform hover:translate-y-1">
+              Crafted by yours truly
+              </a></b>
+          </footer>
         </main>
       </body>
     </html>

@@ -35,6 +35,11 @@ export const libraries = [
     href: 'https://tailwindcss.com/',
   },
   {
+    title: 'PostgreSQL',
+    Icon: SiPostgresql ,
+    href: 'https://www.postgresql.org/',
+  },
+  {
     title: 'SQLite3',
     Icon: SiSqlite,
     href: 'https://www.sqlite.org/index.html',
@@ -54,9 +59,4 @@ export const libraries = [
     Icon: SiDrizzle ,
     href: 'https://www.trufflesuite.com/drizzle',
   },
-  {
-    title: 'PostgreSQL',
-    Icon: SiPostgresql ,
-    href: 'https://www.postgresql.org/',
-  }
 ];

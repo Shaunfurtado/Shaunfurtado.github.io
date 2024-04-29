@@ -1,3 +1,4 @@
+'use client'
 import Link from "next/link";
 import React from "react";
 import { TechIUse } from "@/app/components/tech-i-use";
@@ -7,9 +8,16 @@ import { tools } from '@/app/data/tools';
 import { socialMediaLinks } from '@/app/data/socialMediaLinks';
 import SocialLinks from './components/socialLinks'; 
 import { ProfileImage } from "./components/profileImage";
-import { contactme } from "./data/contactme";
+import { useEffect } from "react";
+import config from "@/app/config.json";
 
 export default function Page() {
+  useEffect(() => {
+    console.info(
+      `${config.ascii}\n`,
+      `Taking a peek huh? Check out the source code: ${config.repo}\n\n`
+    );
+  }, []);
   return (
     <section className="flex flex-col ">
       <div className="flex flex-row items-center">
@@ -20,18 +28,28 @@ export default function Page() {
         </div>
       </div>
       <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
-        <p className="prose prose-neutral dark:prose-invert">
-          This is my new portfolio.
+        <p className="p-4 prose prose-neutral dark:prose-invert">
+          I&apos;m currently pursuing my B.E in Computer Science Engineering at <b><a href="https://sjec.ac.in/">SJEC</a></b>{' '} 
+          in India with a keen focus on Web Applications and Backend APIs. While my main gig revolves around diving 
+          deep into coding and crafting digital solutions, I&apos;m also passionate about exploring the 
+          artistic side of things.
         </p>
-        <p className="p-4 ">i dont have much of a intro but you can check out my{' '}
+        <p className="p-4 ">
+          When I&apos;m not buried in lines of code, you can often find me lost in the world of music, 
+          exploring digital art, or getting lost in the pages of a good book. It&apos;s my way of 
+          finding balance and unleashing my imagination beyond the confines of technology.
+        </p>
+        <p className="p-4 ">
+          I&apos;m always open to hearing about exciting new projects and connecting with fellow 
+          enthusiasts. So, if you want to chat about anything from web development to the latest tunes, 
+          feel free to drop me a line. <b><Link href='/contact'>Let&apos;s connect!</Link></b>
+          </p>
+        <p className="p-4 ">
+          You can also check out my{' '}
           <i><b><a href="/misc">misc</a></b></i> to know more about me and some random stuff.
         </p>
-        <p>
-          On a mission to build products developers{' '}
-          <Link href="/blog/developer-experience">love</Link>, and along the
-          way, teach the next generation of developers. Heres a summary of my
-          work so far.
-        </p>
+        <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
+
         <h2 className="font-medium text-2xl mb-2 tracking-tighter pt-6">Tech Stack that i use:</h2>
         <h3 className="pt-4 ">Languages :</h3>
         <TechIUse tech={languages} />
