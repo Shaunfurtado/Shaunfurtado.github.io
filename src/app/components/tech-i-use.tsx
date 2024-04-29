@@ -33,7 +33,9 @@ const TechCard = ({ title, Icon, href }: TechCardProps) => {
   return (
     <a href={href} target="_blank" rel="noopener noreferrer"> 
       <div
-        className="h-22 flex flex-col items-center justify-center space-y-2 font-semibold border-[1px] border-none bg-white/5 p-4 text-sm rounded-md shadow-md hover:shadow-rose-500/40 active:translate-y-[2px] transition-all duration-300 ease-out"
+        className="h-22 flex flex-col items-center justify-center space-y-2 font-semibold 
+        border-[1px] border-none bg-white/5 p-4 text-sm rounded-md shadow-md hover:shadow-rose-500/40 
+        active:translate-y-[2px] transition-all duration-300 ease-out"
       >
         <Icon size={24} />
         <span className="whitespace-nowrap">{title}</span>
