@@ -12,7 +12,7 @@ export const projects = [
         'Express.js',
         'DaisyUI',
       ],
-      thumb: '/images/project-logo/Code_Trek.png',
+      thumb: '/images/project-logo/Code_Trek.webp',
     },
     {
       title: 'Portfolio',
@@ -27,7 +27,7 @@ export const projects = [
         'MDX',
         'Framer Motion',
       ],
-      thumb: '/images/project-logo/Portfolio.png',
+      thumb: '/images/project-logo/Portfolio.webp',
     },
     {
       title: 'Chain Flow',
@@ -45,7 +45,7 @@ export const projects = [
         'Web3Modal',
         'React QR',
       ],
-      thumb: '/images/project-logo/Flowchain.png',
+      thumb: '/images/project-logo/Flowchain.webp',
     },
     {
       title: 'Twitter Crypto Bot',
@@ -59,7 +59,7 @@ export const projects = [
         'Twittter API',
         'Etherscan API',
       ],
-      thumb: '/images/project-logo/Twitter_Bot.png',
+      thumb: '/images/project-logo/Twitter_Bot.webp',
     },
     {
       title: 'DevHavok',
@@ -71,7 +71,7 @@ export const projects = [
         'Hugo',
         'Archie Theme',
       ],
-      thumb: '/images/project-logo/DevHavok.png',
+      thumb: '/images/project-logo/DevHavok.webp',
     },
     {
       title: 'Hotel Management System',
@@ -86,7 +86,7 @@ export const projects = [
         'PyMySQL Connector',
         'DaisyUI',
       ],
-      thumb: '/images/project-logo/Hotel_Management_System.png',
+      thumb: '/images/project-logo/Hotel_Management_System.webp',
     },
     {
       title: 'Kickstartup',
@@ -103,7 +103,7 @@ export const projects = [
         'Firebase',
         'Quill Editor',
       ],
-      thumb: '/images/project-logo/KickStartUp.png',
+      thumb: '/images/project-logo/KickStartUp.webp',
     },
     {
       title: 'Java GUI Text Editor',
@@ -116,6 +116,6 @@ export const projects = [
         'Swing',
         'AWT',
       ],
-      thumb: '/images/project-logo/Java_GUI.png',
+      thumb: '/images/project-logo/Java_GUI.webp',
     }
   ];
