@@ -30,11 +30,11 @@ export const projects = [
       thumb: '/images/project-logo/Portfolio.png',
     },
     {
-      title: 'Flowchain',
+      title: 'Chain Flow',
       description:
         'Web3 based supply chain management system. For tracking and managing products in the supply chain using ethereum blockchain.',
-      gitLink: 'https://github.com/Shaunfurtado/Flowchain',
-      prodLink: 'https://github.com/Shaunfurtado/Flowchain',
+      gitLink: 'https://github.com/Shaunfurtado/WEb3-based-supply-chain-management-system',
+      prodLink: 'https://github.com/Shaunfurtado/WEb3-based-supply-chain-management-system',
       techStack: [
         'React,js',
         'Ethers.js',
