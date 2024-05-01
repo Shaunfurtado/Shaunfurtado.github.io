@@ -1,80 +1,121 @@
 export const projects = [
     {
-      title: 'me3',
+      title: 'Code Trek',
       description:
-        'Describe yourself in 3 things and share with your friends.',
-      gitLink: 'https://github.com/henriqgoncalvs/me3',
-      prodLink: 'https://me3-henriiqueg.vercel.app/',
+        'Code Trek! Platform where i post Competitve programming solutions for easy access and quick notes.',
+      gitLink: 'https://github.com/Shaunfurtado/Code-Trek',
+      prodLink: 'https://code-trek.vercel.app/',
+      techStack: [
+        'JavaScript',
+        'React.js',
+        'MongoDB',
+        'Express.js',
+        'DaisyUI',
+      ],
+      thumb: '/images/project-logo/Code_Trek.png',
+    },
+    {
+      title: 'Portfolio',
+      description:
+      'My Personal Portfolio. A Showcase of my work and projects.',
+      gitLink: 'https://github.com/Shaunfurtado/Shaunfurtado.github.io',
+      prodLink: 'https://shaunfurtado.is-a.dev/',
       techStack: [
         'TypeScript',
         'Next.js',
         'TailwindCSS',
-        'tRPC',
-        'Prisma',
-      ],
-      thumb: '/images/projects-logo/me3-logo.png',
-    },
-    {
-      title: 'talentuzz',
-      description:
-        'An app for managing organization job postings.',
-      gitLink: 'https://github.com/henriqgoncalvs/talentuzz',
-      prodLink: 'https://talentuzz.vercel.app/',
-      techStack: [
-        'TypeScript',
-        'Next.js',
-        'ChakraUI',
-        'Zustand',
-        'React Query',
-        'Cypress',
-        'RTL',
-        'Storybook',
-      ],
-      thumb: '/images/projects-logo/talentuzz-logo.png',
-    },
-    {
-      title: 'talentuzz-api',
-      description: 'A REST API with NestJS for talentuzz.',
-      prodLink: 'https://talentuzz-api.onrender.com/docs',
-      gitLink: 'https://github.com/henriqgoncalvs/talentuzz-api',
-      techStack: [
-        'NestJS',
-        'TypeScript',
-        'PostgreSQL',
-        'Prisma',
-        'Swagger',
-        'Docker',
-      ],
-      thumb: '/images/projects-logo/talentuzz-api-logo.png',
-    },
-    {
-      title: 'react-leap',
-      description:
-        'Boilerplate for enterprise applications with React.',
-      gitLink: 'https://github.com/henriqgoncalvs/react-leap',
-      techStack: [
-        'TypeScript',
-        'React',
-        'ChakraUI',
-        'Axios',
-        'React Query',
-        'Craco',
-      ],
-      thumb: '/images/projects-logo/react-leap-logo.png',
-    },
-    {
-      title: 'anti-termo',
-      description:
-        'Like Wordle, but you have to MISS the word of the day. Portuguese only.',
-      gitLink: 'https://github.com/henriqgoncalvs/anti-termo',
-      prodLink: 'https://anti-termo.vercel.app/',
-      techStack: [
-        'TypeScript',
-        'Next.js',
-        'TailwindCSS',
-        'Zustand',
+        'MDX',
         'Framer Motion',
       ],
-      thumb: '/images/projects-logo/at-logo.png',
+      thumb: '/images/project-logo/Portfolio.png',
     },
+    {
+      title: 'Flowchain',
+      description:
+        'Web3 based supply chain management system. For tracking and managing products in the supply chain using ethereum blockchain.',
+      gitLink: 'https://github.com/Shaunfurtado/Flowchain',
+      prodLink: 'https://github.com/Shaunfurtado/Flowchain',
+      techStack: [
+        'React,js',
+        'Ethers.js',
+        'Solidity',
+        'DaisyUI',
+        'Hardhat',
+        'Metamask',
+        'Web3Modal',
+        'React QR',
+      ],
+      thumb: '/images/project-logo/Flowchain.png',
+    },
+    {
+      title: 'Twitter Crypto Bot',
+      description:
+        'Cryptocurrency Transaction Tracking Twitter Bot, posting tweets about significant transactions made on the blockchain.', 
+      gitLink: 'https://github.com/Shaunfurtado/Twitter-Bot',
+      prodLink: 'https://github.com/Shaunfurtado/Twitter-Bot',
+      techStack: [
+        'Node.js',
+        'Express.js',
+        'Twittter API',
+        'Etherscan API',
+      ],
+      thumb: '/images/project-logo/Twitter_Bot.png',
+    },
+    {
+      title: 'DevHavok',
+      description:
+        'Personal Blogging site with hugo. A place where i post my tech blogs, thoughts and ideas.',
+      gitLink: 'https://github.com/Shaunfurtado/DevHavok',
+      prodLink: 'https://devhavok.is-a.dev/',
+      techStack: [
+        'Hugo',
+        'Archie Theme',
+      ],
+      thumb: '/images/project-logo/DevHavok.png',
+    },
+    {
+      title: 'Hotel Management System',
+      description:
+        'A Hotel Management System built using Flask and MySQL. A simple system for managing hotel bookings, rooms and services.',
+      gitLink: 'https://github.com/Shaunfurtado/Hotel-Management_Flask',
+      prodLink: 'https://github.com/Shaunfurtado/Hotel-Management_Flask',
+      techStack: [
+        'Python',
+        'MySQL',
+        'Flask',
+        'PyMySQL Connector',
+        'DaisyUI',
+      ],
+      thumb: '/images/project-logo/Hotel_Management_System.png',
+    },
+    {
+      title: 'Kickstartup',
+      description:
+        'Crowdfunding platform with blogs. A platform where users can create campaigns and share their stories to raise funds.',
+      gitLink: 'https://github.com/Shaunfurtado/KickStartUp-Hack',
+      prodLink: 'https://main--monumental-arithmetic-0c4361.netlify.app/',
+      techStack: [
+        'JavaScript',
+        'Vue.js',
+        'VueX',
+        'Vue Router',
+        'Bootstrap',
+        'Firebase',
+        'Quill Editor',
+      ],
+      thumb: '/images/project-logo/KickStartUp.png',
+    },
+    {
+      title: 'Java GUI Text Editor',
+      description:
+        'A simple text editor with basic functionalities built using Java Swing and AWT.',
+      gitLink: 'https://github.com/Shaunfurtado/JAVA-GUI-project',
+      prodLink: 'https://github.com/Shaunfurtado/JAVA-GUI-project',
+      techStack: [
+        'Java',
+        'Swing',
+        'AWT',
+      ],
+      thumb: '/images/project-logo/Java_GUI.png',
+    }
   ];

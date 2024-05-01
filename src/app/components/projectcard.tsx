@@ -1,45 +1,106 @@
-import React from 'react';
-import { IconType } from 'react-icons';
+import Image from 'next/image';
+import NextLink from 'next/link';
+import { AiFillGithub } from 'react-icons/ai';
+import { FiExternalLink } from 'react-icons/fi';
+import Link from 'next/link';
+import { projects } from '@/app/data/projects';
 
-interface ProjectData {
-  title: string;
-  Icon: IconType;
-  href: string; 
-}
-
-interface ProjectProps {
-    project: ProjectData[];
-}
-
-export const TechIUse = ({ project }: ProjectProps) => {
+export const ThingsIveBuilt = () => {
   return (
-    <section className="mt-2 px-4">
-      <div className="mt-5 grid grid-cols-3 gap-2 sm:grid-cols-5">
-        {project.map((projectItem, index) => (
-          <ProjectCard key={index} {...projectItem} />
+    <section className="mt-10 px-4">
+      <p className="text-xl">Things I&apos;ve built</p>
+
+      <div className="mt-5 grid grid-cols-1 gap-2">
+        {projects.map((project) => (
+          <ProjectCard key={project.title} {...project} />
         ))}
       </div>
     </section>
   );
 };
 
-type ProjectCardProps = {
-  title: string;
-  Icon: IconType;
-  href: string;
-};
+type ProjectCardProps = (typeof projects)[0];
 
-const ProjectCard = ({ title, Icon, href }: ProjectCardProps) => { 
+const ProjectCard = ({
+  title,
+  description,
+  gitLink,
+  prodLink,
+  techStack,
+  thumb,
+}: ProjectCardProps) => {
+  const isExternal = prodLink.startsWith('http');
+
   return (
-    <a href={href} target="_blank" rel="noopener noreferrer"> 
-      <div
-        className="h-22 flex flex-col items-center justify-center space-y-2 font-semibold 
-        border-[1px] border-none bg-white/5 p-4 text-sm rounded-md shadow-md hover:shadow-rose-500/40 
-        active:translate-y-[2px] transition-all duration-300 ease-out"
-      >
-        <Icon size={24} />
-        <span className="whitespace-nowrap">{title}</span>
+    <div
+      className={
+        'relative rounded-lg border-[1px] border-none bg-white/5 p-4 ' +
+        'transition-all duration-500 ease-out hover:bg-white/10'
+      }
+    >
+      <div className="flex flex-col space-y-3">
+        {isExternal ? (
+          <a
+            href={prodLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-fit font-semibold flex items-center gap-2"
+          >
+            <Image
+              src={thumb}
+              alt={`${title} logo`}
+              width="32"
+              height="32"
+              className="rounded-md"
+            />
+            <span>{title}</span>
+            <FiExternalLink size={22} />
+          </a>
+        ) : (
+          <NextLink href={prodLink}>
+            <a className="w-fit font-semibold flex items-center gap-2">
+              <Image
+                src={thumb}
+                alt={`${title} logo`}
+                width="32"
+                height="32"
+                className="rounded-md"
+              />
+              <span>{title}</span>
+            </a>
+          </NextLink>
+        )}
+        <p className="text-base">{description}</p>
+
+        <div className="flex flex-wrap items-center">
+          {techStack.map((tech) => (
+            <span
+              key={tech}
+              className="mr-2 mt-2 inline-block rounded-md border-[1px] border-zinc-700 px-2 py-1 font-mono text-xs font-semibold"
+            >
+              {tech}
+            </span>
+          ))}
+        </div>
       </div>
-    </a>
+
+      <NextLink
+        href={gitLink}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={
+          'group absolute top-4 right-4 rounded-lg px-2 py-1'
+        }
+      >
+        <AiFillGithub
+          size={28}
+          color="#ffe4e64d"
+          className={
+            'fill-rose-100/30 transition-all duration-300 ease-out ' +
+            'group-hover:scale-[1.2] group-hover:fill-white'
+          }
+        />
+      </NextLink>
+    </div>
   );
 };

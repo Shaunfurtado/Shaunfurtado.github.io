@@ -1,5 +1,5 @@
 import React from "react";
-import { TechIUse } from "@/app/components/tech-i-use";
+import { TechIUse } from "@/app/components/techCard";
 import { contacts } from '@/app/data/contacts';
 import { SendHorizontal } from 'lucide-react';
 

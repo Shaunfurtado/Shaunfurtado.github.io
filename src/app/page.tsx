@@ -1,7 +1,7 @@
 'use client'
 import Link from "next/link";
 import React from "react";
-import { TechIUse } from "@/app/components/tech-i-use";
+import { TechIUse } from "@/app/components/techCard";
 import { languages } from '@/app/data/languages';
 import { libraries } from '@/app/data/libraries';
 import { tools } from '@/app/data/tools';

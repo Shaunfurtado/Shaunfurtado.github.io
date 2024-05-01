@@ -1,5 +1,6 @@
 import React from "react";
 import Link from 'next/link';
+import { ThingsIveBuilt } from '@/app/components/projectcard';
 import { socialMediaLinks } from '@/app/data/socialMediaLinks';
 import SocialLinks from '../components/socialLinks'; 
 
@@ -9,6 +10,7 @@ export default function Page() {
         <h1 className="font-medium text-2xl mb-8 tracking-tighter">My Projects</h1>
         <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
         <div className="prose prose-neutral dark:prose-invert">
+          <ThingsIveBuilt />
         <ul className="list-disc pl-6 p-4">
           <li>Twitter crypto bot</li>
           <li>This personal portfolio</li>
