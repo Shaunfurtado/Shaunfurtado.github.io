@@ -1,8 +1,7 @@
 import Image from 'next/image';
 import NextLink from 'next/link';
-import { AiFillGithub } from 'react-icons/ai';
+import { VscGithub } from "react-icons/vsc";
 import { FiExternalLink } from 'react-icons/fi';
-import Link from 'next/link';
 import { projects } from '@/app/data/projects';
 
 export const ThingsIveBuilt = () => {
@@ -33,10 +32,11 @@ const ProjectCard = ({
 
   return (
     <div
-      className={
-        'relative rounded-lg border-[1px] border-none bg-white/5 p-4 ' +
-        'transition-all duration-500 ease-out hover:bg-white/10'
-      }
+    className={
+      'relative rounded-lg border border-gray-300 bg-white shadow-md p-4 ' +
+      'transition-all duration-300 ease-in-out hover:bg-gray-100 dark:rounded-lg dark:border-[1px] dark:border-none dark:bg-white/5 dark:hover:bg-white/10 dark:shadow-none'
+    }
+    
     >
       <div className="flex flex-col space-y-3">
         {isExternal ? (
@@ -88,17 +88,12 @@ const ProjectCard = ({
         href={gitLink}
         target="_blank"
         rel="noopener noreferrer"
-        className={
-          'group absolute top-4 right-4 rounded-lg px-2 py-1'
-        }
-      >
-        <AiFillGithub
+        className="group absolute top-4 right-4 rounded-lg px-2 py-1 bg-gray-100 hover:bg-gray-200"
+        >
+        <VscGithub 
           size={28}
-          color="#ffe4e64d"
-          className={
-            'fill-rose-100/30 transition-all duration-300 ease-out ' +
-            'group-hover:scale-[1.2] group-hover:fill-white'
-          }
+          color="#333"
+            className="fill-current group-hover:text-white transition-all duration-300 ease-in-out"
         />
       </NextLink>
     </div>

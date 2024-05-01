@@ -53,6 +53,7 @@ html {
   min-width: 360px;
 }
 
+
 .prose .anchor {
   @apply absolute invisible no-underline;
 
@@ -154,4 +155,20 @@ table {
 
 .title {
   text-wrap: balance;
+}
+
+@font-face {
+  font-family: 'Satoshi';
+  src: url('/fonts/Satoshi.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Cascadia';
+  src: url('/fonts/CascadiaCode.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
 }
