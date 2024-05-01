@@ -19,11 +19,11 @@ export default function Page() {
           <li>Kickstartup: Crowdfunding With blogs</li>
           <li>Java GUI text editor</li>
         </ul>
-        <p>Other projects :</p>
+        {/* <p>Other projects :</p>
         <ul>
           <li>arduino fingerprint door unlock system</li>
           <li>nodemcu based water tank level monitoring system</li>
-        </ul>
+        </ul> */}
         </div>
         <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
         <div className="flex flex-row justify-between items-center mt-0">
