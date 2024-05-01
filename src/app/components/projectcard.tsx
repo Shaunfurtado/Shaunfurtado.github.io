@@ -10,7 +10,7 @@ export const ThingsIveBuilt = () => {
     <section className="mt-10 px-4">
       <p className="text-xl">Things I&apos;ve built</p>
 
-      <div className="mt-5 grid grid-cols-1 gap-2">
+      <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
         {projects.map((project) => (
           <ProjectCard key={project.title} {...project} />
         ))}

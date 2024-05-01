@@ -1,4 +1,4 @@
-'use client'
+"use client";
 import Link from "next/link";
 import React from "react";
 import { TechIUse } from "@/app/components/techCard";
@@ -19,7 +19,7 @@ export default function Page() {
     );
   }, []);
   return (
-    <section className="flex flex-col ">
+    <section className="flex flex-col max-w-screen-xl mx-auto">
       <div className="flex flex-row items-center">
         <ProfileImage />
         <div className="ml-4">
@@ -59,7 +59,7 @@ export default function Page() {
           <i><b><a href="/misc">misc</a></b></i> to know more about me and some random stuff.
         </p>
         <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
-
+      
         <h2 className="font-medium text-2xl mb-2 tracking-tighter pt-6">Tech Stack that i use:</h2>
         <h3 className="pt-4 ">Languages :</h3>
         <TechIUse tech={languages} />
