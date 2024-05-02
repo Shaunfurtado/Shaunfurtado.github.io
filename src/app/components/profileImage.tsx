@@ -24,6 +24,7 @@ export const ProfileImage = ({
       >
         <Image
           src="https://avatars.githubusercontent.com/u/91174227?v=4"
+          // src={'/images/ChainFlow.jpg'}
           alt="A picture of Shaun"
           priority
           className="rounded-full"

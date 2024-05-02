@@ -45,7 +45,7 @@ export const projects = [
         'Web3Modal',
         'React QR',
       ],
-      thumb: '/images/project-logo/Flowchain.webp',
+      thumb: '/images/project-logo/ChainFlow.webp',
     },
     {
       title: 'Twitter Crypto Bot',
