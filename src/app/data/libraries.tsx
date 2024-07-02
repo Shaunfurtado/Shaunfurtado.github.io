@@ -1,5 +1,5 @@
 import { IoLogoNodejs } from 'react-icons/io5';
-import { SiExpress, SiSqlite, SiDrizzle, SiPostgresql   } from "react-icons/si";
+import { SiExpress, SiSqlite, SiDrizzle, SiMysql    } from "react-icons/si";
 import {
   TbBrandNextjs,
   TbBrandReact,
@@ -35,9 +35,9 @@ export const libraries = [
     href: 'https://tailwindcss.com/',
   },
   {
-    title: 'PostgreSQL',
-    Icon: SiPostgresql ,
-    href: 'https://www.postgresql.org/',
+    title: 'MySQL',
+    Icon: SiMysql,
+    href: 'https://www.mysql.com/',
   },
   {
     title: 'SQLite3',
