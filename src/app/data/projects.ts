@@ -34,7 +34,7 @@ export const projects = [
       description:
         'Web3 based supply chain management system. For tracking and managing products in the supply chain using ethereum blockchain.',
       gitLink: 'https://github.com/Shaunfurtado/WEb3-based-supply-chain-management-system',
-      prodLink: 'https://github.com/Shaunfurtado/WEb3-based-supply-chain-management-system',
+      prodLink: 'https://shaunfurtado.is-a.dev/WEb3-based-supply-chain-management-system',
       techStack: [
         'React,js',
         'Ethers.js',
@@ -52,7 +52,7 @@ export const projects = [
       description:
         'Cryptocurrency Transaction Tracking Twitter Bot, posting tweets about significant transactions made on the blockchain.', 
       gitLink: 'https://github.com/Shaunfurtado/Twitter-Bot',
-      prodLink: 'https://github.com/Shaunfurtado/Twitter-Bot',
+      prodLink: 'https://shaunfurtado.is-a.dev/Twitter-Bot',
       techStack: [
         'Node.js',
         'Express.js',
@@ -78,7 +78,7 @@ export const projects = [
       description:
         'A Hotel Management System built using Flask and MySQL. A simple system for managing hotel bookings, rooms and services.',
       gitLink: 'https://github.com/Shaunfurtado/Hotel-Management_Flask',
-      prodLink: 'https://github.com/Shaunfurtado/Hotel-Management_Flask',
+      prodLink: 'https://shaunfurtado.is-a.dev/Hotel-Management_Flask/',
       techStack: [
         'Python',
         'MySQL',
@@ -110,12 +110,27 @@ export const projects = [
       description:
         'A simple text editor with basic functionalities built using Java Swing and AWT.',
       gitLink: 'https://github.com/Shaunfurtado/JAVA-GUI-project',
-      prodLink: 'https://github.com/Shaunfurtado/JAVA-GUI-project',
+      prodLink: 'https://shaunfurtado.is-a.dev/JAVA-GUI-project/',
       techStack: [
         'Java',
         'Swing',
         'AWT',
       ],
       thumb: '/images/project-logo/Java_GUI.webp',
+    },
+    {
+      title: 'Fitness Tracker',
+      description:
+        'A fitness tracker designed to monitor and record daily physique updates.',
+      gitLink: 'https://github.com/Shaunfurtado/fitness_tracker',
+      prodLink: 'https://shaunfurtado.is-a.dev/fitness_tracker/',
+      techStack: [
+        'Bun',
+        'Elysia',
+        'HTMX',
+        'SQLite',
+        'Drizzle',
+      ],
+      thumb: '/images/project-logo/Fitness_Tracker.webp',
     }
   ];
