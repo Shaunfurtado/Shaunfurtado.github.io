@@ -1,4 +1,19 @@
 export const projects = [
+  {
+    title: 'Fitness Tracker',
+    description:
+      'A fitness tracker designed to monitor and record daily physique updates.',
+    gitLink: 'https://github.com/Shaunfurtado/fitness_tracker',
+    prodLink: 'https://shaunfurtado.is-a.dev/fitness_tracker/',
+    techStack: [
+      'Bun',
+      'Elysia',
+      'HTMX',
+      'SQLite',
+      'Drizzle',
+    ],
+    thumb: '/images/project-logo/Fitness_Tracker.webp',
+  },
     {
       title: 'Code Trek',
       description:
@@ -117,20 +132,5 @@ export const projects = [
         'AWT',
       ],
       thumb: '/images/project-logo/Java_GUI.webp',
-    },
-    {
-      title: 'Fitness Tracker',
-      description:
-        'A fitness tracker designed to monitor and record daily physique updates.',
-      gitLink: 'https://github.com/Shaunfurtado/fitness_tracker',
-      prodLink: 'https://shaunfurtado.is-a.dev/fitness_tracker/',
-      techStack: [
-        'Bun',
-        'Elysia',
-        'HTMX',
-        'SQLite',
-        'Drizzle',
-      ],
-      thumb: '/images/project-logo/Fitness_Tracker.webp',
     }
   ];
