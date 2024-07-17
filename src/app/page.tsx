@@ -27,7 +27,7 @@ export default function Page() {
           <h1 className="font-medium text-4xl mb-4 tracking-tighter">Shaun Furtado</h1>
           <div className="flex justify-end">
             <div className="h-12 mr-4 md:h-10 flex flex-col items-center justify-center space-y-2 font-semibold border-[1px] border-none bg-white/5 p-4 text-sm md:text-base rounded-md shadow-md hover:shadow-rose-500/40 active:translate-y-[2px] transition-all duration-300 ease-out">
-              <a href="./Resume.pdf" target="blank" className="whitespace-nowrap">Resume</a>
+              <a href="https://shaunfurtado.is-a.dev/Resume/resume.pdf" target="blank" className="whitespace-nowrap">Resume</a>
             </div>
             <Link href='/contact'>
                 <div className="h-12 md:h-10 flex flex-col items-center justify-center space-y-2 font-semibold border-[1px] border-none bg-white/5 p-4 text-sm md:text-base rounded-md shadow-md hover:shadow-rose-500/40 active:translate-y-[2px] transition-all duration-300 ease-out">
