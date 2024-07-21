@@ -1,5 +1,23 @@
 export const projects = [
   {
+    title: 'ConferEase',
+    description:
+      'Experience secure, private video conferencing with seamless communication and advanced privacy features.',
+    gitLink: 'https://github.com/Shaunfurtado/ConferEase',
+    prodLink: 'https://shaunfurtado.is-a.dev/ConferEase/',
+    techStack: [
+      'React.js',
+      'Express.js',
+      'PocketBase',
+      'Redis',
+      'Socket.io',
+      'TailwindCSS',
+      'Docker',
+      'Docker Compose',
+    ],
+    thumb: '/images/project-logo/ConferEase.webp',
+  },
+  {
     title: 'Fitness Tracker',
     description:
       'A fitness tracker designed to monitor and record daily physique updates.',
