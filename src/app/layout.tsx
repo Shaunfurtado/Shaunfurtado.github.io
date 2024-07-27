@@ -3,6 +3,7 @@ import Particles from "./components/particles";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { Navbar } from './components/nav';
+import GoogleAnalytics from "./components/GoogleAnalytics";
 
 
 const inter = Inter({ subsets: ["latin"] });
@@ -40,6 +41,7 @@ export default function RootLayout({
         className="absolute inset-0 -z-10 animate-fade-in"
         quantity={300}
       />
+          <GoogleAnalytics />
           <Navbar />
           {children}
           <footer className="text-center py-4 text-sm">
@@ -53,3 +55,4 @@ export default function RootLayout({
     </html>
   );
 }
+
