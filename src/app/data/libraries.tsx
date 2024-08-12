@@ -57,6 +57,6 @@ export const libraries = [
   {
     title: 'Drizzle',
     Icon: SiDrizzle ,
-    href: 'https://www.trufflesuite.com/drizzle',
+    href: 'https://orm.drizzle.team/',
   },
 ];
