@@ -2,6 +2,7 @@
 
 import React, { useRef, useEffect, useState } from "react";
 import { useMousePosition } from "@/util/mouse";
+import { useTheme } from 'next-themes';
 
 interface ParticlesProps {
 	className?: string;
@@ -18,6 +19,7 @@ export default function Particles({
 	ease = 50,
 	refresh = false,
 }: ParticlesProps) {
+	const { theme } = useTheme();
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const canvasContainerRef = useRef<HTMLDivElement>(null);
 	const context = useRef<CanvasRenderingContext2D | null>(null);
@@ -29,16 +31,16 @@ export default function Particles({
 
 	useEffect(() => {
 		if (canvasRef.current) {
-			context.current = canvasRef.current.getContext("2d");
+		  context.current = canvasRef.current.getContext("2d");
 		}
 		initCanvas();
 		animate();
 		window.addEventListener("resize", initCanvas);
-
+	  
 		return () => {
-			window.removeEventListener("resize", initCanvas);
+		  window.removeEventListener("resize", initCanvas);
 		};
-	}, []);
+	  }, [theme]);
 
 	useEffect(() => {
 		onMouseMove();
@@ -46,7 +48,7 @@ export default function Particles({
 
 	useEffect(() => {
 		initCanvas();
-	}, [refresh]);
+	  }, [theme, refresh]);
 
 	const initCanvas = () => {
 		resizeCanvas();
@@ -124,11 +126,7 @@ export default function Particles({
 		  context.current.translate(translateX, translateY);
 		  context.current.beginPath();
 		  
-		  const systemTheme = window.matchMedia("(prefers-color-scheme: dark)").matches
-			? "dark"
-			: "light";
-	  
-		  const fillStyle = systemTheme === "dark"
+		  const fillStyle = theme === "dark"
 			? `rgba(255, 255, 0, ${alpha})`
 			: `rgba(255, 0, 0, ${alpha})`;
 	  
@@ -180,12 +178,11 @@ export default function Particles({
 	const animate = () => {
 		clearContext();
 		circles.current.forEach((circle: Circle, i: number) => {
-			// Handle the alpha value
 			const edge = [
-				circle.x + circle.translateX - circle.size, // distance from left edge
-				canvasSize.current.w - circle.x - circle.translateX - circle.size, // distance from right edge
-				circle.y + circle.translateY - circle.size, // distance from top edge
-				canvasSize.current.h - circle.y - circle.translateY - circle.size, // distance from bottom edge
+				circle.x + circle.translateX - circle.size,
+				canvasSize.current.w - circle.x - circle.translateX - circle.size,
+				circle.y + circle.translateY - circle.size,
+				canvasSize.current.h - circle.y - circle.translateY - circle.size,
 			];
 			const closestEdge = edge.reduce((a, b) => Math.min(a, b));
 			const remapClosestEdge = parseFloat(
@@ -207,19 +204,15 @@ export default function Particles({
 			circle.translateY +=
 				(mouse.current.y / (staticity / circle.magnetism) - circle.translateY) /
 				ease;
-			// circle gets out of the canvas
 			if (
 				circle.x < -circle.size ||
 				circle.x > canvasSize.current.w + circle.size ||
 				circle.y < -circle.size ||
 				circle.y > canvasSize.current.h + circle.size
 			) {
-				// remove the circle from the array
 				circles.current.splice(i, 1);
-				// create a new circle
 				const newCircle = circleParams();
 				drawCircle(newCircle);
-				// update the circle position
 			} else {
 				drawCircle(
 					{
