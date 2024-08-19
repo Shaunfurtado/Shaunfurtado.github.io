@@ -1,5 +1,20 @@
 export const projects = [
   {
+    title: 'AniWaList',
+    description:
+      'A Anime Tracker where users can track and manage their anime watch list.',
+    gitLink: 'https://github.com/Shaunfurtado/AniWaList',
+    prodLink: 'https://shaunfurtado.is-a.dev/AniWaList/',
+    techStack: [
+      'Next.js',
+      'Elysia.js',
+      'Bun',
+      'Sqlite',
+      'TailwindCSS',
+    ],
+    thumb: '/images/project-logo/AniWaList.webp',
+  },
+  {
     title: 'ConferEase',
     description:
       'Experience secure, private video conferencing with seamless communication and advanced privacy features.',
