@@ -12,7 +12,7 @@ export default function Page() {
     const formData = new FormData(e.currentTarget);
     
     // Directly include the webhook URL here
-    const webhookURL = process.env.NEXT_PUBLIC_DISCORD_WEBHOOK_URL;
+    const webhookURL = 'https://discord.com/api/webhooks/1278239780911583243/6CPq2DiDSQbD2S6TyjEW_YBeE9UW-UQpvG-a1lG4hzzzFbMNofN6oHjC5_4SBu9wINHJ'; // Replace with your actual webhook URL
 
     const payload = {
       embeds: [
@@ -32,7 +32,7 @@ export default function Page() {
     };
 
     try {
-      const response = await fetch(webhookURL!, {
+      const response = await fetch(webhookURL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
