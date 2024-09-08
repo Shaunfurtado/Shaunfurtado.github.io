@@ -15,6 +15,19 @@ export const projects = [
     thumb: '/images/project-logo/AniWaList.webp',
   },
   {
+    title: 'GitHub Profile Card',
+    description:
+      'A GitHub Profile Stats Card. Generate a card with your GitHub stats and share it on social media.',
+    gitLink: 'https://github.com/Shaunfurtado/GitCard',
+    prodLink: 'https://shaunfurtado.is-a.dev/GitCard/github-card.svg',
+    techStack: [
+      'Figma',
+      'HTML',
+      'CSS',
+    ],
+    thumb: '/images/project-logo/GitCard.webp',
+  },
+  {
     title: 'ConferEase',
     description:
       'Experience secure, private video conferencing with seamless communication and advanced privacy features.',
