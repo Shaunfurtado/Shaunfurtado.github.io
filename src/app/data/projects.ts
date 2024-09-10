@@ -1,5 +1,21 @@
 export const projects = [
   {
+    title: 'GitCard',
+    description:
+      'A GitHub Profile Stats Card Generator. Generate a card with your GitHub stats and share it on social media.',
+    gitLink: 'https://github.com/Shaunfurtado/GitCard',
+    prodLink: 'https://shaunfurtado.is-a.dev/GitCard/github-card.svg',
+    techStack: [
+      'Figma',
+      'HTML',
+      'CSS',
+      'JavaScript',
+      'Shell Script',
+      'Bash',
+    ],
+    thumb: '/images/project-logo/GitCard.webp',
+  },
+  {
     title: 'AniWaList',
     description:
       'A Anime Tracker where users can track and manage their anime watch list.',
@@ -13,19 +29,6 @@ export const projects = [
       'TailwindCSS',
     ],
     thumb: '/images/project-logo/AniWaList.webp',
-  },
-  {
-    title: 'GitHub Profile Card',
-    description:
-      'A GitHub Profile Stats Card. Generate a card with your GitHub stats and share it on social media.',
-    gitLink: 'https://github.com/Shaunfurtado/GitCard',
-    prodLink: 'https://shaunfurtado.is-a.dev/GitCard/github-card.svg',
-    techStack: [
-      'Figma',
-      'HTML',
-      'CSS',
-    ],
-    thumb: '/images/project-logo/GitCard.webp',
   },
   {
     title: 'ConferEase',
