@@ -1,5 +1,21 @@
 export const projects = [
   {
+    title: 'Mail Assistant',
+    description:
+      'Mail Assistant, is a tool built using TypeScript that automates email responses using Artificial Intelligence.',
+    gitLink: 'https://github.com/Shaunfurtado/Mail-Assistant',
+    prodLink: 'https://www.youtube.com/watch?v=EtzrnOjGhJA',
+    techStack: [
+      'Express.js',
+      'TypeScript',
+      'BullMQ',
+      'Redis',
+      'Gemini',
+      'Gmail API',
+    ],
+    thumb: '/images/project-logo/Mail_Assistant.webp',
+  },
+  {
     title: 'GitCard',
     description:
       'A GitHub Profile Stats Card Generator. Generate a card with your GitHub stats and share it on social media.',
