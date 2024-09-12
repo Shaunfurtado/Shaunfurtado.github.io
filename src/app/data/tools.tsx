@@ -1,5 +1,3 @@
-// Type: Data
-import { SiGimp } from "react-icons/si";
 import {
   TbBrandGit,
   TbBrandDocker,

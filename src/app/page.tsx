@@ -45,11 +45,6 @@ export default function Page() {
           artistic side of things.
         </p>
         <p className="p-4 ">
-          When I&apos;m not buried in lines of code, you can often find me lost in the world of music, 
-          exploring digital art, or getting lost in the pages of a good book. It&apos;s my way of 
-          finding balance and unleashing my imagination beyond the confines of technology.
-        </p>
-        <p className="p-4 ">
           I&apos;m always open to hearing about exciting new projects and connecting with fellow 
           enthusiasts. So, if you want to chat about anything from web development to the latest tunes, 
           feel free to drop me a line. <b><Link href='/contact'>Let&apos;s connect!</Link></b>
