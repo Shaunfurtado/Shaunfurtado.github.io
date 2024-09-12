@@ -9,6 +9,7 @@ const navItems = {
   '/': { name: 'Home' },
   '/projects': { name: 'Projects' },
   '/work': { name: 'Experience' },
+  '/DevHavok': { name: 'Blog' },
   '/contact': { name: 'Contact' },
 };
 
