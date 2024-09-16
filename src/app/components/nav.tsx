@@ -47,7 +47,7 @@ export function Navbar() {
               </Link>
             ))}
           </div>
-          <button onClick={toggleTheme} className="ml-auto p-2">
+          <button onClick={toggleTheme} aria-label='themeToggle' className="ml-auto p-2">
             {theme === 'light' ? (
               <IoMoonOutline size={24} />
             ) : (

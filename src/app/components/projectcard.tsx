@@ -44,14 +44,16 @@ const ProjectCard = ({
             href={prodLink}
             target="_blank"
             rel="noopener noreferrer"
+            aria-label={title}
             className="w-fit font-semibold flex items-center gap-2"
           >
             <Image
               src={thumb}
-              alt={`${title} logo`}
+              alt={`Logo of ${title}`}
               width="32"
               height="32"
               className="rounded-md"
+              aria-label={title}
             />
             <span>{title}</span>
             <FiExternalLink size={22} />

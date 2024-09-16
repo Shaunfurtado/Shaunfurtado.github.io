@@ -16,13 +16,13 @@ const SocialLinks: React.FC<SocialLinksProps> = ({ links }) => {
       {links.map((link, index) => (
         <li key={index}>
           <a
-            className="flex items-center transition-all hover:text-neutral-800 dark:hover:text-neutral-100"
+            className="flex items-center transition-all font-medium hover:text-neutral-900 dark:hover:text-neutral-200"
             rel="noopener noreferrer"
             target="_blank"
             href={link.href}
           >
             {link.icon}
-            <p className="ml-2 h-7">{link.name}</p>
+            <p className="ml-2 h-7 font-bold">{link.name}</p>
           </a>
         </li>
       ))}

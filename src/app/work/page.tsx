@@ -14,13 +14,13 @@ export default function Page() {
           way, learn continuously with the changing world. Heres a summary of my
           work so far.
         </p>
-        <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
+        <hr className="my-6 border-neutral-200 dark:border-neutral-800" />
         <h2 className="font-medium text-xl mb-1 tracking-tighter">Karpine Limited</h2>
-        <p className="text-neutral-600 dark:text-neutral-400 text-sm">
+        <p className="font-normal text-sm">
   Blockchain Intern at Karpine, Jan 2024 — Mar 2024 (Remote)
 </p>
-<p className="text-neutral-600 dark:text-neutral-400 text-sm">
-  <b>Technologies used:</b> Node.js, React.js, Express.js, Moralis, Git
+<p className="font-normal text-sm">
+  <b className="font-normal text-sm">Technologies used:</b> Node.js, React.js, Express.js, Moralis, Git
 </p>
 <p className="p-2">
 At Karpine, I contributed to cutting-edge blockchain projects:</p>
@@ -40,11 +40,11 @@ At Karpine, I contributed to cutting-edge blockchain projects:</p>
 
         <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
         <h2 className="font-medium text-xl mb-1 tracking-tighter">Motion Cut</h2>
-<p className="text-neutral-600 dark:text-neutral-400 text-sm">
+<p className="font-normal text-sm">
   Web Developer Intern, Oct 2023 — Nov 2023 (Remote)
 </p>
-<p className="text-neutral-600 dark:text-neutral-400 text-sm">
-  <b>Technologies used:</b> React.js, HTML, CSS, Javascript, Figma, Git
+<p className="font-normal text-sm">
+  <b className="font-normal text-sm">Technologies used:</b> React.js, HTML, CSS, Javascript, Figma, Git
 </p>
 <p className="p-2">
 At Motioncut, I worked on diverse web projects:
