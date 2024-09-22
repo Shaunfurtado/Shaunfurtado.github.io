@@ -1,5 +1,6 @@
 import { IoLogoJavascript } from "react-icons/io5";
 import { LiaJava } from "react-icons/lia";
+import { FaGolang } from "react-icons/fa6";
 import {
   TbBrandCpp,
   TbBrandTypescript,
@@ -21,6 +22,11 @@ export const languages = [
     title: 'TypeScript',
     Icon: TbBrandTypescript,
     href: 'https://www.typescriptlang.org/',
+  },
+  {
+    title: 'Golang',
+    Icon: FaGolang,
+    href: 'https://go.dev/',
   },
   {
     title: 'Python',

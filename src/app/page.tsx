@@ -78,7 +78,13 @@ export default function Page() {
         <h2 className="font-medium text-xl mb-1 tracking-tighter">Certifications :</h2>
         <ul className="list-disc pl-6 p-4">
           <li>
+            <b>TechA CompTIA Security+(Plus) Certification:</b> A certification for modern security practices and functions.
+          </li>
+          <li>
             <b>Google Data Analytics Professional Certificate:</b> Acquired a comprehensive understanding of data analytics via Coursera.
+          </li>
+          <li>
+            <b>Fundamentals of Reinforcement Learning:</b> Acquired a comprehensive understanding of a general purpose formalism for automated decision-making and AI.
           </li>
           <li>
             <b>Salesforce Administrator Certification:</b> Demonstrated expertise in Salesforce administration, enhancing my skills in CRM platforms.

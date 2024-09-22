@@ -1,5 +1,5 @@
 import { IoLogoNodejs } from 'react-icons/io5';
-import { SiExpress, SiSqlite, SiDrizzle, SiMysql    } from "react-icons/si";
+import { SiExpress, SiSqlite, SiDrizzle, SiMysql, SiBun } from "react-icons/si";
 import {
   TbBrandNextjs,
   TbBrandReact,
@@ -23,6 +23,11 @@ export const libraries = [
     title: 'Node.js',
     Icon: IoLogoNodejs,
     href: 'https://nodejs.org/',
+  },
+  {
+    title: 'Bun.js',
+    Icon: SiBun,
+    href: 'https://bun.sh/',
   },
   {
     title: 'Express.js',

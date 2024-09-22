@@ -5,6 +5,7 @@ import {
   TbBrandFigma, 
   TbBrandBlender,
 } from 'react-icons/tb';
+import { FaAws } from "react-icons/fa";
 
 export const tools = [
   {
@@ -16,6 +17,11 @@ export const tools = [
     title: 'Docker',
     Icon: TbBrandDocker,
     href: 'https://www.docker.com/',
+  },
+  {
+    title: 'AWS',
+    Icon: FaAws,
+    href: 'https://aws.amazon.com/',
   },
   {
     title: 'VS Code',
