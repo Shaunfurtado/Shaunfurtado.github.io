@@ -20,7 +20,7 @@ export const projects = [
     description:
       'A GitHub Profile Stats Card Generator. Generate a card with your GitHub stats and share it on social media.',
     gitLink: 'https://github.com/Shaunfurtado/GitCard',
-    prodLink: 'https://shaunfurtado.is-a.dev/GitCard/github-card.svg',
+    prodLink: 'https://shaunfurtado.is-a.dev/Static-APIs/github-card.svg',
     techStack: [
       'Figma',
       'HTML',
