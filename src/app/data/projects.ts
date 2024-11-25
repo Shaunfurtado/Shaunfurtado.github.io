@@ -1,5 +1,20 @@
 export const projects = [
   {
+    title: 'MinSSG',
+    description:
+      'MinSSG is an online static code-sharing platform that allows users to showcase project structures directly from a MarkDown file.',
+    gitLink: 'https://github.com/Shaunfurtado/MinSSG',
+    prodLink: 'https://shaunfurtado.is-a.dev/MinSSG/?fileUrl=https://gist.githubusercontent.com/Shaunfurtado/2036bc36cf9d86fdbf680a69ae3f8d8d/raw/38a03779e5daa0efd0bd8512ad756813483a72a2/ConRAG.md',
+    techStack: [
+      'HTML',
+      'CSS',
+      'JS',
+      'Shiki',
+      'Bootstrap Icons',
+    ],
+    thumb: '/images/project-logo/MinSSG.webp',
+  },
+  {
     title: 'Mail Assistant',
     description:
       'Mail Assistant, is a tool built using TypeScript that automates email responses using Artificial Intelligence.',
