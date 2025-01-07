@@ -12,8 +12,11 @@ export default function ContactForm() {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    const discordWebhookUrl = 'https://discord.com/api/webhooks/1326043463157944431/HubBsq0pmjbU26eIlahBztzUTa2IJY2cSEloPkmjPn36y7Lj9rm3-6tzD0oyKluAosrC';
-
+    const discordWebhookUrl = process.env.NEXT_PUBLIC_DISCORD_WEBHOOK_URL;
+    if (!discordWebhookUrl) {
+      console.error("Webhook URL is not defined");
+      return;
+    }
     const messageData = {
       username: name,
       embeds: [
