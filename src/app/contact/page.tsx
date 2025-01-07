@@ -12,7 +12,7 @@ export default function ContactForm() {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    const discordWebhookUrl = 'https://discord.com/api/webhooks/1278239780911583243/6CPq2DiDSQbD2S6TyjEW_YBeE9UW-UQpvG-a1lG4hzzzFbMNofN6oHjC5_4SBu9wINHJ';
+    const discordWebhookUrl = 'https://discord.com/api/webhooks/1326043463157944431/HubBsq0pmjbU26eIlahBztzUTa2IJY2cSEloPkmjPn36y7Lj9rm3-6tzD0oyKluAosrC';
 
     const messageData = {
       username: name,
