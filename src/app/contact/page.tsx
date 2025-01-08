@@ -10,7 +10,7 @@ export default function Page() {
       <div className="prose prose-neutral dark:prose-invert">
         <h1 className="font-medium text-2xl mb-8 tracking-tighter">Say Hello! </h1>
         <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
-        <form action="https://forms.181124.xyz/submit" method="POST" className="flex flex-col mt-0 mb-8">
+        <form action="https://forms.shaunfurtado49.workers.dev/submit" method="POST" className="flex flex-col mt-0 mb-8">
           <input type="hidden" name="access_key" value="49441493-17c3-4208-b449-dd06b1e86052" className="p-4 mb-2 border-b border-gray-300 transition ease-in-out duration-500 focus:outline-none focus:border-black focus:shadow-none" placeholder="Your Input" />
           <input type="text" name="name" required className="p-4 mb-2 border-b border-gray-300 transition ease-in-out duration-500 focus:outline-none focus:border-black focus:shadow-none" placeholder="Your Name" />
           <input type="email" name="email" required className="p-4 mb-2 border-b border-gray-300 transition ease-in-out duration-500 focus:outline-none focus:border-black focus:shadow-none" placeholder="Your E-mail" />
