@@ -50,7 +50,7 @@ export default function RootLayout({
             <Navbar />
             {children}
             <footer className="text-center py-4 text-sm">
-              © 2024 Shaun Furtado. <b><a href="https://github.com/Shaunfurtado/Shaunfurtado.github.io"
+              © 2025 Shaun Furtado. <b><a href="https://github.com/Shaunfurtado/Shaunfurtado.github.io"
               className="underline underline-offset-4 hover:no-underline font-bold transition duration-300 transform hover:translate-y-1">
                 Crafted by yours truly
                 </a></b>
