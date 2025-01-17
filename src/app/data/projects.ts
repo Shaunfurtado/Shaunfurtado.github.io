@@ -1,5 +1,24 @@
 export const projects = [
   {
+    title: 'ConRAG',
+    description:
+      'A dynamic conversational AI leveraging RAG for seamless custom document interaction. Transform your static documents into engaging, interactive conversations',
+    gitLink: 'https://github.com/Shaunfurtado/ConRAG',
+    prodLink: 'https://github.com/Shaunfurtado/ConRAG',
+    techStack: [
+      'TypeScript',
+      'Express.js',
+      'Langchain',
+      'Transformers',
+      'MilvusDB',
+      'SQLite',
+      'Ollama',
+      'Gemini',
+      'ShadCN'
+    ],
+    thumb: '/images/project-logo/ConRAG.webp',
+  },
+  {
     title: 'MinSSG',
     description:
       'MinSSG is an online static code-sharing platform that allows users to showcase project structures directly from a MarkDown file.',
