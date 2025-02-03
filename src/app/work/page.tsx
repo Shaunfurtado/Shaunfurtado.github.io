@@ -9,12 +9,6 @@ export default function Page() {
     <section>
       <h1 className="font-medium text-2xl mb-8 tracking-tighter">Experience</h1>
       <div className="prose prose-neutral dark:prose-invert">
-        <p>
-          On a mission to build products people love, and along the
-          way, learn continuously with the changing world. Heres a summary of my
-          work so far.
-        </p>
-        <hr className="my-6 border-neutral-200 dark:border-neutral-800" />
         <h2 className="font-medium text-xl mb-1 tracking-tighter">Karpine Limited</h2>
         <p className="font-normal text-sm">
   Blockchain Intern at Karpine, Jan 2024 — Mar 2024 (Remote)
@@ -30,13 +24,7 @@ At Karpine, I contributed to cutting-edge blockchain projects:</p>
   </li>
   <li>
   Designed and implemented a secure Token Swap Dapp for crypto token launches. Leveraged MERN stack (MongoDB, Express.js, React.js, Node.js) and Moralis APIs for seamless user experience.  </li>
-  <li>
-    Throughout my internship, I used Git for version control and collaborated with other team members to ensure the successful completion of the projects.
-  </li>
 </ul>
-<p>
-  My contributions to Karpine during my internship helped in increasing the efficiency of monitoring Token transactions.
-</p>
 
         <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
         <h2 className="font-medium text-xl mb-1 tracking-tighter">Motion Cut</h2>
@@ -59,13 +47,7 @@ At Motioncut, I worked on diverse web projects:
   <li>
     Focused on security measures, particularly form validation. I implemented various validation checks to prevent malicious attacks, ensuring the safety and integrity of user data.
   </li>
-  <li>
-    Created an interactive to-do list application. This involved creating a user-friendly interface, implementing CRUD operations, and integrating a database for persistent storage.
-  </li>
 </ul>
-<p>
-  My contributions to Motioncut during my internship helped improve their web presence and security, and provided valuable tools for task management.
-</p>
 
       </div>
       <hr className="my-6 border-neutral-100 dark:border-neutral-800" />

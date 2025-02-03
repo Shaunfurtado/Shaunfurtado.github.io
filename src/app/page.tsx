@@ -39,16 +39,12 @@ export default function Page() {
       </div>
       <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
         <p className="p-4 prose prose-neutral dark:prose-invert">
-          I&apos;m currently pursuing my B.E in Computer Science Engineering at <b><a href="https://sjec.ac.in/">SJEC</a></b>{' '} 
-          in India with a keen focus on Web Applications and Backend APIs. While my main gig revolves around diving 
-          deep into coding and crafting digital solutions, I&apos;m also passionate about exploring the 
-          artistic side of things.
-        </p>
-        <p className="p-4 ">
-          I&apos;m always open to hearing about exciting new projects and connecting with fellow 
-          enthusiasts. So, if you want to chat about anything from web development to the latest tunes, 
-          feel free to drop me a line. <b><Link href='/contact'>Let&apos;s connect!</Link></b>
-          </p>
+  I&apos;m a software developer with a strong focus on Web Applications and Backend APIs. My work revolves around building scalable digital solutions, optimizing performance, and enhancing user experiences.
+</p>
+<p className="p-4">
+  I&apos;m always open to collaborating on exciting projects and connecting with like-minded professionals. If you&apos;d like to discuss web development, tech trends, or innovative ideas, <b><Link href='/contact'>let&apos;s connect!</Link></b>
+</p>
+
         <p className="p-4 ">
           You can also check out my{' '}
           <i><b><a href="/misc">misc</a></b></i> to know more about me and some random stuff.
@@ -66,34 +62,34 @@ export default function Page() {
         <h2 className="font-medium text-xl mb-1 tracking-tighter">Achievements :</h2>
         <ul className="list-disc pl-6 p-4">
           <li>
-            <b>2022 SJEC Premiere Hackathon:</b> Achieved runner-up position in the medical category, demonstrating my ability to apply tech solutions in healthcare.
+            <b>2022 SJEC Premiere Hackathon:</b> 1st Runner Up
           </li>
           <li>
-            <b>HacktoFuture by EGDK and SJEC, 2023:</b> Secured the runner-up spot under the finance category, showcasing my skills in financial technology solutions.
+            <b>HacktoFuture National Level Hackathon by EGDK and SJEC, 2023:</b> 1st Runner Up
           </li>
           <li>
-            <b>Smart Nitte Hackathon:</b> Earned an internship opportunity at Karpine Limited, a renowned blockchain company, by demonstrating my proficiency in blockchain technology.
+            <b>Smart Nitte Hackathon 2023:</b> Innovative Solution, Internship
           </li>
         </ul>
         <h2 className="font-medium text-xl mb-1 tracking-tighter">Certifications :</h2>
         <ul className="list-disc pl-6 p-4">
           <li>
-            <b>TechA CompTIA Security+(Plus) Certification:</b> A certification for modern security practices and functions.
+            <b>TechA CompTIA Security+(Plus) Certification:</b>
           </li>
           <li>
-            <b>Google Data Analytics Professional Certificate:</b> Acquired a comprehensive understanding of data analytics via Coursera.
+            <b>Google Data Analytics Professional Certificate:</b>
           </li>
           <li>
-            <b>Fundamentals of Reinforcement Learning:</b> Acquired a comprehensive understanding of a general purpose formalism for automated decision-making and AI.
+            <b>Fundamentals of Reinforcement Learning:</b>
           </li>
           <li>
-            <b>Salesforce Administrator Certification:</b> Demonstrated expertise in Salesforce administration, enhancing my skills in CRM platforms.
+            <b>Salesforce Administrator Certification:</b>
           </li>
           <li>
-            <b>Data Structures, University of California San Diego:</b> Gained a solid foundation in data structures through a course on Coursera, strengthening my problem-solving skills.
+            <b>Data Structures, University of California San Diego:</b>
           </li>
           <li>
-            <b>HTML, CSS, and Javascript for Web Developers, Johns Hopkins University:</b> Developed a strong grasp of web development fundamentals through this Coursera course.
+            <b>HTML, CSS, and Javascript for Web Developers, Johns Hopkins University:</b>
           </li>
         </ul>
         <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
