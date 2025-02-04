@@ -74,22 +74,22 @@ export default function Page() {
         <h2 className="font-medium text-xl mb-1 tracking-tighter">Certifications :</h2>
         <ul className="list-disc pl-6 p-4">
           <li>
-            <b>TechA CompTIA Security+(Plus) Certification</b>
+            TechA CompTIA Security+(Plus) Certification
           </li>
           <li>
-            <b>Google Data Analytics Professional Certificate</b>
+            Google Data Analytics Professional Certificate
           </li>
           <li>
-            <b>Fundamentals of Reinforcement Learning</b>
+            Fundamentals of Reinforcement Learning
           </li>
           <li>
-            <b>Salesforce Administrator Certification</b>
+            Salesforce Administrator Certification
           </li>
           <li>
-            <b>Data Structures, University of California San Diego</b>
+            Data Structures, University of California San Diego
           </li>
           <li>
-            <b>HTML, CSS, and Javascript for Web Developers, Johns Hopkins University</b>
+            HTML, CSS, and Javascript for Web Developers, Johns Hopkins University
           </li>
         </ul>
         <hr className="my-6 border-neutral-100 dark:border-neutral-800" />
