@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shaun Furtado</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <!-- Using Inter for hyper-clean readability and JetBrains Mono for technical accents -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;800&family=JetBrains+Mono:wght@100;400&display=swap" rel="stylesheet">
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['"JetBrains Mono"', 'monospace'],
+                    },
+                    colors: {
+                        void: '#030303',
+                        surface: '#0a0a0a',
+                        muted: '#666666',
+                        ink: '#e0e0e0'
+                    },
+                    letterSpacing: {
+                        tighter: '-.04em',
+                        widest: '.25em',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body {
+            background-color: #030303;
+            color: #e0e0e0;
+            /* Subtle film grain texture for a premium, physical feel */
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.04'/%3E%3C/svg%3E");
+            selection-background-color: #e0e0e0;
+            selection-color: #030303;
+        }
+
+        ::selection {
+            background: #e0e0e0;
+            color: #030303;
+        }
+
+        .fade-in-up {
+            animation: fadeInUp 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            opacity: 0;
+            transform: translateY(20px);
+        }
+
+        .delay-1 { animation-delay: 0.2s; }
+        .delay-2 { animation-delay: 0.4s; }
+        .delay-3 { animation-delay: 0.6s; }
+
+        @keyframes fadeInUp {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Minimalist hover effect for links */
+        .hover-line {
+            position: relative;
+            display: inline-block;
+        }
+        
+        .hover-line::after {
+            content: '';
+            position: absolute;
+            width: 100%;
+            transform: scaleX(0);
+            height: 1px;
+            bottom: -4px;
+            left: 0;
+            background-color: #e0e0e0;
+            transform-origin: bottom right;
+            transition: transform 0.4s cubic-bezier(0.86, 0, 0.07, 1);
+        }
+        
+        .hover-line:hover::after {
+            transform: scaleX(1);
+            transform-origin: bottom left;
+        }
+    </style>
+</head>
+<body class="antialiased min-h-screen flex flex-col justify-between selection:bg-ink selection:text-void">
+
+    <header class="p-6 md:p-12 flex justify-between items-start font-mono text-[10px] md:text-xs text-muted uppercase tracking-widest fade-in-up">
+        <div>
+        </div>
+        <div class="text-right">
+            <span>Loc: India</span><br>
+            <span id="utc-time">Time: --:--:--</span>
+        </div>
+    </header>
+
+    <main class="flex-grow flex flex-col justify-center px-6 md:px-12 max-w-7xl mx-auto w-full py-20">
+        
+        <div class="mb-24 fade-in-up delay-1">
+            <h1 class="text-6xl md:text-8xl lg:text-9xl font-black tracking-tighter leading-none mb-6 text-ink">
+                Shaun<br>Furtado.
+            </h1>
+            <p class="font-mono text-sm md:text-base text-muted uppercase tracking-widest">
+                Systems Architect // Engineer
+            </p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-12 md:gap-6 mb-32 fade-in-up delay-2">
+            <div class="md:col-span-4 font-mono text-xs uppercase tracking-widest text-muted pt-2">
+                [ Philosophy ]
+            </div>
+            <div class="md:col-span-8 lg:col-span-6">
+                <p class="text-xl md:text-3xl font-light leading-relaxed text-ink/90">
+                    The technology stack is transient; the architectural principles are permanent. I engineer deterministic systems in stochastic environments, focusing on low-latency infrastructure, applied intelligence, and mathematical precision. I build things to last.
+                </p>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-12 md:gap-6 fade-in-up delay-3">
+            <div class="md:col-span-4 font-mono text-xs uppercase tracking-widest text-muted pt-2">
+                [ Domains ]
+            </div>
+            <div class="md:col-span-8 lg:col-span-8">
+                <ul class="space-y-8 md:space-y-12">
+                    <li class="border-t border-surface pt-6">
+                        <h2 class="text-2xl md:text-4xl font-medium tracking-tight mb-3">Applied Intelligence & Agentic Systems</h2>
+                        <p class="text-muted md:text-lg max-w-2xl font-light">Designing multi-agent topologies and real-time inference engines. Moving beyond wrappers to build deep, context-aware architectures that operate autonomously.</p>
+                    </li>
+                    <li class="border-t border-surface pt-6">
+                        <h2 class="text-2xl md:text-4xl font-medium tracking-tight mb-3">High-Throughput Infrastructure</h2>
+                        <p class="text-muted md:text-lg max-w-2xl font-light">Architecting native, low-resource pipelines capable of processing extreme data volatility and real-time state synchronization with zero tolerance for failure.</p>
+                    </li>
+                    <li class="border-t border-surface pt-6">
+                        <h2 class="text-2xl md:text-4xl font-medium tracking-tight mb-3">Deterministic Architecture</h2>
+                        <p class="text-muted md:text-lg max-w-2xl font-light">Prioritizing sound mathematical models, strict privacy protocols, and uncompromising system stability over developmental trends.</p>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+    </main>
+
+    <footer class="px-6 md:px-12 py-12 border-t border-surface flex flex-col md:flex-row justify-between items-end gap-8 fade-in-up delay-3">
+        <div class="flex flex-col gap-4 font-mono text-sm uppercase tracking-widest">
+            <div class="text-xs text-muted mb-2">[ Destinations ]</div>
+            <a href="https://github.com/Shaunfurtado" target="_blank" rel="noopener noreferrer" class="hover-line text-ink w-max">
+                -> GitHub
+            </a>
+            <a href="https://linkedin.com/in/shaun-furtado-16579722b/" target="_blank" rel="noopener noreferrer" class="hover-line text-ink w-max">
+                -> LinkedIn
+            </a>
+            <a href="mailto:shaunf1801@gmail.com" class="hover-line text-ink w-max">
+                -> Email
+            </a>
+        </div>
+        
+        <div class="text-right">
+        </div>
+    </footer>
+
+    <script>
+        function updateTime() {
+            const timeElement = document.getElementById('utc-time');
+            const now = new Date();
+            // Displaying strict UTC time to emphasize universal engineering perspective
+            const hours = String(now.getUTCHours()).padStart(2, '0');
+            const minutes = String(now.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(now.getUTCSeconds()).padStart(2, '0');
+            timeElement.textContent = `Time: ${hours}:${minutes}:${seconds} UTC`;
+        }
+        
+        setInterval(updateTime, 1000);
+        updateTime();
+    </script>
+</body>
+</html>
