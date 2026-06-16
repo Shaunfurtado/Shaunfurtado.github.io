@@ -1,5 +1,6 @@
 ---
-import { CollectionEntry, getCollection } from 'astro:content';
+import '../../styles/global.css';
+import { CollectionEntry, getCollection, render } from 'astro:content';
 
 type Props = {
   post: CollectionEntry<'blog'>;
@@ -10,13 +11,13 @@ export async function getStaticPaths() {
   return posts
     .filter((post) => !post.data.draft)
     .map((post) => ({
-      params: { slug: post.slug },
+      params: { slug: post.id },
       props: { post },
     }));
 }
 
 const { post } = Astro.props as Props;
-const { Content } = await post.render();
+const { Content } = await render(post);
 
 const formatDate = (value: Date) =>
   value.toLocaleDateString('en-GB', {
@@ -39,22 +40,19 @@ const formatDate = (value: Date) =>
       property="article:published_time"
       content={post.data.pubDate.toISOString()}
     />
-    <meta property="og:url" content={`https://shaunfurtado.is-a.dev/blog/${post.slug}/`} />
+    <meta property="og:url" content={`https://shaunfurtado.is-a.dev/blog/${post.id}/`} />
     <meta property="og:type" content="article" />
     <meta name="robots" content="index, follow" />
 
-    <script src="https://cdn.tailwindcss.com"></script>
     <style>
-      body {
-        background-color: #030303;
-        color: #e0e0e0;
-        min-height: 100vh;
-        margin: 0;
+      :global(body) {
+        font-family: var(--font-sans);
       }
-      article h1,
-      article h2,
-      article h3,
-      article h4 {
+
+      :global(.blog-post h1),
+      :global(.blog-post h2),
+      :global(.blog-post h3),
+      :global(.blog-post h4) {
         color: #f2f2f2;
       }
     </style>
@@ -67,7 +65,7 @@ const formatDate = (value: Date) =>
       <h1 class="text-4xl md:text-5xl font-black tracking-tight leading-tight max-w-3xl">
         {post.data.title}
       </h1>
-      <article class="prose prose-invert prose-zinc max-w-none">
+      <article class="blog-post prose prose-invert prose-zinc max-w-none prose-headings:font-medium prose-a:text-ink prose-a:no-underline hover:prose-a:underline prose-strong:text-zinc-100 prose-code:text-zinc-100">
         <Content />
       </article>
       <p>

@@ -1,4 +1,5 @@
 ---
+import '../styles/global.css';
 import { getCollection } from 'astro:content';
 
 const allPosts = await getCollection('blog');
@@ -34,98 +35,9 @@ const formatDate = (value: Date) =>
     <meta property="og:url" content={Astro.url.href} />
     <meta property="og:type" content="website" />
 
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;800&family=JetBrains+Mono:wght@100;400&display=swap"
-      rel="stylesheet"
-    />
-
-    <script>
-      tailwind.config = {
-        theme: {
-          extend: {
-            fontFamily: {
-              sans: ['Inter', 'sans-serif'],
-              mono: ['"JetBrains Mono"', 'monospace'],
-            },
-            colors: {
-              void: '#030303',
-              surface: '#0a0a0a',
-              muted: '#666666',
-              ink: '#e0e0e0',
-            },
-            letterSpacing: {
-              tighter: '-.04em',
-              widest: '.25em',
-            },
-          },
-        },
-      };
-    </script>
-
     <style>
-      body {
-        background-color: #030303;
-        color: #e0e0e0;
-        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.04'/%3E%3C/svg%3E");
-        selection-background-color: #e0e0e0;
-        selection-color: #030303;
-      }
-
-      ::selection {
-        background: #e0e0e0;
-        color: #030303;
-      }
-
-      .fade-in-up {
-        animation: fadeInUp 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-        opacity: 0;
-        transform: translateY(20px);
-      }
-
-      .delay-1 {
-        animation-delay: 0.2s;
-      }
-      .delay-2 {
-        animation-delay: 0.4s;
-      }
-      .delay-3 {
-        animation-delay: 0.6s;
-      }
-      .delay-4 {
-        animation-delay: 0.8s;
-      }
-
-      @keyframes fadeInUp {
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
-      }
-
-      .hover-line {
-        position: relative;
-        display: inline-block;
-      }
-
-      .hover-line::after {
-        content: '';
-        position: absolute;
-        width: 100%;
-        transform: scaleX(0);
-        height: 1px;
-        bottom: -4px;
-        left: 0;
-        background-color: #e0e0e0;
-        transform-origin: bottom right;
-        transition: transform 0.4s cubic-bezier(0.86, 0, 0.07, 1);
-      }
-
-      .hover-line:hover::after {
-        transform: scaleX(1);
-        transform-origin: bottom left;
+      :global(body) {
+        background-attachment: fixed;
       }
     </style>
   </head>
@@ -213,7 +125,7 @@ const formatDate = (value: Date) =>
                   {formatDate(post.data.pubDate)}
                 </span>
                 <a
-                  href={`/blog/${post.slug}/`}
+                  href={`/blog/${post.id}/`}
                   class="text-xl md:text-2xl font-light text-ink/80 group-hover:text-white transition-colors duration-300"
                 >
                   {post.data.title}
