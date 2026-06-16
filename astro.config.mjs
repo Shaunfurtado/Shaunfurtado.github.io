@@ -1,9 +1,12 @@
+// @ts-check
 import { defineConfig } from 'astro/config';
-import mdx from '@astrojs/mdx';
-import sitemap from '@astrojs/sitemap';
 
+import sitemap from '@astrojs/sitemap';
+import mdx from '@astrojs/mdx';
+
+// https://astro.build/config
 export default defineConfig({
   site: 'https://shaunfurtado.is-a.dev',
   output: 'static',
-  integrations: [mdx(), sitemap()],
+  integrations: [sitemap(), mdx()],
 });
