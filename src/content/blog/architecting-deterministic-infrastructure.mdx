@@ -1,19 +1,120 @@
 ---
-title: The Case for Deterministic Infrastructure
-description: Why predictability and invariants matter more than framework churn.
-pubDate: 2026-01-15
+title: Deterministic Infrastructure for Autonomous Agents
+description: Why the hottest problem in AI is no longer prompting, but controlling what agents are allowed to do in production.
+pubDate: 2026-06-20
 tags:
   - architecture
   - infrastructure
+  - ai-agents
 ---
 
-The fastest systems are the ones that remain boring in the right moments.  
-When latency spikes, teams lose time on speculation and recover by adding guardrails.
+The most interesting AI systems right now are not chat boxes. They are workers with tools: code agents, browser agents, support agents, finance agents, security agents, and internal operators that can read state, make decisions, and touch production-adjacent systems.
 
-In this note, we focus on three practical moves:
+That shift changes the real engineering problem. A prompt can be wrong and still be harmless. An agent with a token, a shell, a browser session, or database access can be wrong in ways that mutate the world.
 
-1. Define stability contracts for every critical path.
-2. Use deterministic observability with consistent schema.
-3. Prefer predictable defaults over convenience-first defaults.
+This is why the current agent conversation is moving away from "how do we make the model smarter?" and toward "how do we make the surrounding system impossible to surprise?"
 
-This is still a placeholder post, but it is fully rendered through Astro's MDX pipeline and appears as a real route at `/blog/architecting-deterministic-infrastructure`.
+In June 2026, Google DeepMind's AI control work was being discussed as a security-style problem: autonomous systems need layered monitoring and containment, not just better alignment. Around the same time, enterprise AI writing from Salesforce was emphasizing deterministic guardrails and context engineering as major 2026 agent trends, and OpenAI has been framing enterprise AI around agents becoming available across company workflows.
+
+- [Axios on DeepMind's AI Control Roadmap](https://www.axios.com/2026/06/18/google-deepmind-prepares-for-rogue-ai-agents)
+- [Salesforce on 2026 AI agent trends](https://www.salesforce.com/blog/ai-agent-trends-2026/)
+- [OpenAI on the next phase of enterprise AI](https://openai.com/index/next-phase-of-enterprise-ai/)
+
+The pattern is clear: agents are becoming useful enough to deploy, but powerful enough to require infrastructure that behaves more like an operating system than a wrapper.
+
+## The Agent Is Not the System
+
+A production agent is a distributed system wearing a conversational interface.
+
+The model is only one component. Around it sits retrieval, memory, policy, identity, secrets, queues, tools, state stores, approval paths, observability, evals, fallbacks, and human escalation. If any of those pieces are vague, the agent becomes vague.
+
+The mistake is to treat autonomy as a model property. In practice, autonomy is an infrastructure budget. You decide how much authority the system gets, where it can spend that authority, how quickly it can act, and what evidence it must leave behind.
+
+## Determinism Belongs Around the Model
+
+The model can remain probabilistic. The control plane should not.
+
+Useful agent infrastructure should define:
+
+1. **A capability ledger**  
+   Every tool call should map to a named capability, a scoped identity, and a reason. "Can send email" is too broad. "Can draft a reply for human approval" and "can send a low-risk templated status update to an allowlisted domain" are different capabilities.
+
+2. **Typed state transitions**  
+   Agent workflows should move through explicit states: observed, planned, proposed, approved, executed, verified, rolled back. This makes failure inspectable and prevents the system from blending thought, action, and recovery into one opaque stream.
+
+3. **Budgeted autonomy**  
+   Autonomy should have limits: time, money, rate, blast radius, data class, and reversibility. A support agent can be allowed to refund small amounts. A deployment agent can prepare a rollout. A production write should probably require stronger evidence or human approval.
+
+4. **Replayable execution**  
+   If an agent takes an action, the system should be able to reconstruct the input context, selected tools, policy checks, outputs, and resulting state. Without replay, "agent reasoning" becomes an excuse for missing logs.
+
+5. **Intervention points**  
+   The best agent systems do not wait for a disaster before they ask for help. They pause at boundary crossings: destructive operations, privilege changes, uncertain data, irreversible external calls, or low-confidence plans.
+
+## The New Stack Is Policy-Native
+
+Prompting is still useful, but it is not a boundary. A prompt is an instruction. Infrastructure is enforcement.
+
+For agents, policy should live close to the action layer:
+
+- Tool schemas should encode what is possible.
+- Permission checks should happen before execution, not after generation.
+- Sensitive data should be filtered by identity and task, not dumped into context.
+- High-risk actions should require typed approvals.
+- Observability should track intent, not only latency and errors.
+
+This is the difference between "the agent was told not to delete records" and "the agent has no production-delete capability unless a separate approval token exists."
+
+One is a wish. The other is architecture.
+
+## Context Engineering Is Really State Design
+
+Context engineering is hot because agents fail when they see too little, too much, or the wrong thing at the wrong time. But context is not just a bigger prompt. It is a state-selection problem.
+
+A strong context layer should answer:
+
+- What does the agent need to know for this step?
+- What should be hidden even if it is available?
+- Which facts are fresh, stale, inferred, or user-provided?
+- Which prior actions are relevant to the next decision?
+- Which uncertainty should force a pause?
+
+The quality of an agent often comes less from a magical instruction and more from refusing to put messy, unauthenticated, contradictory state into the model's working memory.
+
+## A Simple Mental Model
+
+I like thinking of production agents as trains, not cars.
+
+A car can go anywhere, which is flexible and dangerous. A train is constrained by track, switches, signals, stations, and dispatch. It can still move fast, but the environment makes some failures structurally harder.
+
+Agent infrastructure needs the same idea:
+
+- Tracks are allowed workflows.
+- Switches are policy decisions.
+- Signals are observability and evals.
+- Stations are human review points.
+- Dispatch is orchestration.
+
+The model supplies judgment inside a constrained route. The system decides which routes exist.
+
+## What I Would Build First
+
+If I were putting an agent into a serious workflow, I would not begin with the most impressive demo. I would build the boring control plane:
+
+1. A tool registry with capability names, risk levels, and owners.
+2. A policy engine that can deny, allow, or require approval.
+3. An event log that records every observation, plan, tool call, and state transition.
+4. A replay harness for failed or suspicious runs.
+5. A small eval suite built from real operational incidents.
+
+Only after that would I increase autonomy.
+
+The reason is simple: intelligence compounds risk when the environment is under-specified. Determinism compounds trust when the environment is designed well.
+
+## The Point
+
+The agent wave is not just an AI trend. It is an infrastructure design test.
+
+The winners will not be the systems that let models do everything. They will be the systems that make useful autonomy boring: bounded, observable, reversible, and precise.
+
+That is the case for deterministic infrastructure now. Not because models are weak, but because they are becoming strong enough to deserve real boundaries.

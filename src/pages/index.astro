@@ -35,37 +35,61 @@ const formatDate = (value: Date) =>
     <meta property="og:url" content={Astro.url.href} />
     <meta property="og:type" content="website" />
 
-    <style>
-      :global(body) {
-        background-attachment: fixed;
-      }
-    </style>
+    <script is:inline>
+      const savedTheme = (() => {
+        try {
+          return localStorage.getItem('theme');
+        } catch {
+          return null;
+        }
+      })();
+      const systemTheme = window.matchMedia('(prefers-color-scheme: light)').matches
+        ? 'light'
+        : 'dark';
+      document.documentElement.dataset.theme = savedTheme || systemTheme;
+    </script>
   </head>
-  <body class="antialiased min-h-screen flex flex-col justify-between selection:bg-ink selection:text-void">
-    <header class="p-6 md:p-12 flex justify-between items-start font-mono text-[10px] md:text-xs text-muted uppercase tracking-widest fade-in-up">
-      <div></div>
-      <div class="text-right">
+  <body class="app-shell antialiased min-h-screen flex flex-col justify-between selection:bg-ink selection:text-void">
+    <header class="p-6 md:p-12 flex justify-between items-start fade-in-up">
+      <button
+        id="theme-toggle"
+        class="phase-toggle"
+        type="button"
+        aria-label="Switch appearance"
+      >
+        <span class="phase-aperture" aria-hidden="true">
+          <span></span>
+        </span>
+      </button>
+      <div class="text-right kicker">
         <span>Loc: India</span><br />
         <span id="utc-time">Time: --:--:--</span>
       </div>
     </header>
 
     <main class="flex-grow flex flex-col justify-center px-6 md:px-12 max-w-7xl mx-auto w-full py-20">
-      <div class="mb-24 fade-in-up delay-1">
-        <h1 class="text-6xl md:text-8xl lg:text-9xl font-black tracking-tighter leading-none mb-6 text-ink">
-          Shaun<br />Furtado.
-        </h1>
-        <p class="font-mono text-sm md:text-base text-muted uppercase tracking-widest">
-          Systems Architect // Engineer
-        </p>
+      <div class="mb-24 fade-in-up delay-1 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(14rem,22rem)] gap-12 md:items-end">
+        <div>
+          <h1 class="hero-name mb-6">
+            Shaun<br />Furtado.
+          </h1>
+          <p class="kicker text-sm md:text-base">
+            Systems Architect // Engineer
+          </p>
+        </div>
+        <div class="hero-index">
+          <span>Applied Intelligence</span>
+          <span>Low-Latency Infrastructure</span>
+          <span>Deterministic Control Planes</span>
+        </div>
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-12 gap-12 md:gap-6 mb-32 fade-in-up delay-2">
-        <div class="md:col-span-4 font-mono text-xs uppercase tracking-widest text-muted pt-2">
+        <div class="md:col-span-4 kicker pt-2">
           [ Philosophy ]
         </div>
         <div class="md:col-span-8 lg:col-span-6">
-          <p class="text-xl md:text-3xl font-light leading-relaxed text-ink/90">
+          <p class="text-xl md:text-3xl font-light leading-relaxed text-balance" style="color: var(--ink-soft);">
             The technology stack is transient; the architectural principles are
             permanent. I engineer deterministic systems in stochastic environments,
             focusing on low-latency infrastructure, applied intelligence, and
@@ -75,36 +99,36 @@ const formatDate = (value: Date) =>
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-12 gap-12 md:gap-6 fade-in-up delay-3">
-        <div class="md:col-span-4 font-mono text-xs uppercase tracking-widest text-muted pt-2">
+        <div class="md:col-span-4 kicker pt-2">
           [ Domains ]
         </div>
         <div class="md:col-span-8 lg:col-span-8">
           <ul class="space-y-8 md:space-y-12">
-            <li class="border-t border-surface pt-6">
-              <h2 class="text-2xl md:text-4xl font-medium tracking-tight mb-3">
+            <li class="domain-item">
+              <h2 class="domain-title mb-3">
                 Applied Intelligence & Agentic Systems
               </h2>
-              <p class="text-muted md:text-lg max-w-2xl font-light">
+              <p class="domain-copy md:text-lg max-w-2xl">
                 Designing multi-agent topologies and real-time inference engines.
                 Moving beyond wrappers to build deep, context-aware architectures that
                 operate autonomously.
               </p>
             </li>
-            <li class="border-t border-surface pt-6">
-              <h2 class="text-2xl md:text-4xl font-medium tracking-tight mb-3">
+            <li class="domain-item">
+              <h2 class="domain-title mb-3">
                 High-Throughput Infrastructure
               </h2>
-              <p class="text-muted md:text-lg max-w-2xl font-light">
+              <p class="domain-copy md:text-lg max-w-2xl">
                 Architecting native, low-resource pipelines capable of processing
                 extreme data volatility and real-time state synchronization with zero
                 tolerance for failure.
               </p>
             </li>
-            <li class="border-t border-surface pt-6">
-              <h2 class="text-2xl md:text-4xl font-medium tracking-tight mb-3">
+            <li class="domain-item">
+              <h2 class="domain-title mb-3">
                 Deterministic Architecture
               </h2>
-              <p class="text-muted md:text-lg max-w-2xl font-light">
+              <p class="domain-copy md:text-lg max-w-2xl">
                 Prioritizing sound mathematical models, strict privacy protocols, and
                 uncompromising system stability over developmental trends.
               </p>
@@ -114,19 +138,20 @@ const formatDate = (value: Date) =>
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-12 gap-12 md:gap-6 mt-32 fade-in-up delay-4">
-        <div class="md:col-span-4 font-mono text-xs uppercase tracking-widest text-muted pt-2">
+        <div class="md:col-span-4 kicker pt-2">
           [ Log ]
         </div>
         <div class="md:col-span-8 lg:col-span-8">
           <ul class="space-y-2">
             {topPosts.slice(0, 3).map((post) => (
-              <li class="group flex flex-col md:flex-row md:items-baseline gap-2 md:gap-8 border-t border-surface pt-6 pb-4">
-                <span class="font-mono text-xs text-muted w-28 shrink-0">
+              <li class="group flex flex-col md:flex-row md:items-baseline gap-2 md:gap-8 signal-rule pt-6 pb-4">
+                <span class="font-mono text-xs w-28 shrink-0" style="color: var(--muted);">
                   {formatDate(post.data.pubDate)}
                 </span>
                 <a
                   href={`/blog/${post.id}/`}
-                  class="text-xl md:text-2xl font-light text-ink/80 group-hover:text-white transition-colors duration-300"
+                  class="text-xl md:text-2xl font-light transition-colors duration-300"
+                  style="color: var(--ink-soft);"
                 >
                   {post.data.title}
                 </a>
@@ -136,7 +161,7 @@ const formatDate = (value: Date) =>
           <div class="mt-12">
             <a
               href="/blog/"
-              class="hover-line font-mono text-xs uppercase tracking-widest text-muted hover:text-ink transition-colors"
+              class="hover-line mono-link transition-colors"
             >
               -> Go to the Blog
             </a>
@@ -145,9 +170,9 @@ const formatDate = (value: Date) =>
       </div>
     </main>
 
-    <footer class="px-6 md:px-12 py-12 border-t border-surface flex flex-col md:flex-row justify-between items-end gap-8 fade-in-up delay-4">
+    <footer class="px-6 md:px-12 py-12 signal-rule flex flex-col md:flex-row justify-between items-end gap-8 fade-in-up delay-4">
       <div class="flex flex-col gap-4 font-mono text-sm uppercase tracking-widest">
-        <div class="text-xs text-muted mb-2">[ Destinations ]</div>
+        <div class="kicker mb-2">[ Destinations ]</div>
         <a href="/blog/" class="hover-line text-ink w-max">
           -> The Archive
         </a>
@@ -175,7 +200,70 @@ const formatDate = (value: Date) =>
       <div class="text-right"></div>
     </footer>
 
+    <div id="phase-transition" class="phase-transition" aria-hidden="true"></div>
+
     <script>
+      const root = document.documentElement;
+      const themeToggle = document.getElementById('theme-toggle');
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: light)');
+      let phaseChanging = false;
+
+      function systemTheme() {
+        return mediaQuery.matches ? 'light' : 'dark';
+      }
+
+      function storedTheme() {
+        try {
+          return localStorage.getItem('theme');
+        } catch {
+          return null;
+        }
+      }
+
+      function setTheme(theme, persist = true) {
+        root.dataset.theme = theme;
+        if (persist) {
+          try {
+            localStorage.setItem('theme', theme);
+          } catch {}
+        }
+        themeToggle?.setAttribute(
+          'aria-label',
+          `Switch to ${theme === 'light' ? 'dark' : 'light'} appearance`,
+        );
+      }
+
+      themeToggle?.addEventListener('click', () => {
+        if (phaseChanging) return;
+        const next = (root.dataset.theme || systemTheme()) === 'light' ? 'dark' : 'light';
+        phaseChanging = true;
+        root.dataset.nextTheme = next;
+        root.classList.add('phase-shifting');
+
+        window.setTimeout(() => setTheme(next), 260);
+        window.setTimeout(() => {
+          root.classList.remove('phase-shifting');
+          delete root.dataset.nextTheme;
+          phaseChanging = false;
+        }, 720);
+      });
+
+      mediaQuery.addEventListener('change', () => {
+        if (!storedTheme()) {
+          root.dataset.theme = systemTheme();
+          themeToggle?.setAttribute(
+            'aria-label',
+            `Switch to ${root.dataset.theme === 'light' ? 'dark' : 'light'} appearance`,
+          );
+        }
+      });
+
+      requestAnimationFrame(() => root.classList.add('theme-ready'));
+      themeToggle?.setAttribute(
+        'aria-label',
+        `Switch to ${(root.dataset.theme || systemTheme()) === 'light' ? 'dark' : 'light'} appearance`,
+      );
+
       function updateTime() {
         const timeElement = document.getElementById('utc-time');
         const now = new Date();

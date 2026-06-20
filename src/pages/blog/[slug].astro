@@ -44,32 +44,33 @@ const formatDate = (value: Date) =>
     <meta property="og:type" content="article" />
     <meta name="robots" content="index, follow" />
 
-    <style>
-      :global(body) {
-        font-family: var(--font-sans);
-      }
-
-      :global(.blog-post h1),
-      :global(.blog-post h2),
-      :global(.blog-post h3),
-      :global(.blog-post h4) {
-        color: #f2f2f2;
-      }
-    </style>
+    <script is:inline>
+      const savedTheme = (() => {
+        try {
+          return localStorage.getItem('theme');
+        } catch {
+          return null;
+        }
+      })();
+      const systemTheme = window.matchMedia('(prefers-color-scheme: light)').matches
+        ? 'light'
+        : 'dark';
+      document.documentElement.dataset.theme = savedTheme || systemTheme;
+    </script>
   </head>
-  <body class="antialiased">
+  <body class="app-shell antialiased">
     <main class="max-w-4xl mx-auto px-6 py-16 space-y-6">
-      <p class="text-xs font-mono uppercase tracking-widest text-zinc-400">
+      <p class="kicker">
         {formatDate(post.data.pubDate)}
       </p>
-      <h1 class="text-4xl md:text-5xl font-black tracking-tight leading-tight max-w-3xl">
+      <h1 class="text-4xl md:text-5xl font-black leading-tight max-w-3xl" style="letter-spacing: 0; color: var(--ink);">
         {post.data.title}
       </h1>
-      <article class="blog-post prose prose-invert prose-zinc max-w-none prose-headings:font-medium prose-a:text-ink prose-a:no-underline hover:prose-a:underline prose-strong:text-zinc-100 prose-code:text-zinc-100">
+      <article class="blog-post prose max-w-none prose-headings:font-medium prose-a:no-underline hover:prose-a:underline" style="--tw-prose-body: var(--ink-soft); --tw-prose-bold: var(--ink); --tw-prose-code: var(--ink); --tw-prose-quotes: var(--ink); --tw-prose-counters: var(--muted); --tw-prose-bullets: var(--muted); --tw-prose-hr: var(--surface);">
         <Content />
       </article>
       <p>
-        <a href="/blog/" class="text-sm font-mono uppercase tracking-widest text-zinc-400">
+        <a href="/blog/" class="mono-link hover-line">
           -> Back to blog
         </a>
       </p>
