@@ -1,0 +1,160 @@
+---
+title: 'Human-in-the-Loop AI: An Approval Button Is Not an Authorization System'
+description: Build human-in-the-loop AI approvals around exact proposals, resource
+  versions, expiry, dispatch revalidation, and clear UX for uncertain external outcomes.
+pubDate: '2026-10-20'
+tags:
+- ai-agents
+- ux
+- security
+- software-architecture
+- product-development
+author: Shaun Furtado
+draft: false
+canonicalURL: https://shaunfurtado.is-a.dev/blog/human-in-the-loop-ai-approval-authorization/
+heroImage: /blog-assets/covers/12-human-in-the-loop-ai-approval-authorization.png
+heroImageAlt: 'Approval is an execution contract — Human-in-the-Loop AI: An Approval
+  Button Is Not an Authorization System; an editorial diagram cover by Shaun Furtado.'
+seoTitle: 'Human-in-the-Loop AI: Safer Approval Architecture'
+series: Systems in Practice
+articleId: 12
+---
+import ArticleDiagram from '/src/components/ArticleDiagram.astro';
+
+
+“Are you sure?” is a weak security boundary.
+
+It asks the human to supply confidence without necessarily supplying the information needed to be confident. In an agent application, it can be worse: the person may approve one thing while the system eventually executes another.
+
+Suppose an agent prepares a message with an attachment. The user reviews the recipient, the text, and the document. Before the queued action runs, the document changes. Does the approval cover the new version?
+
+If your answer is “the user clicked approve,” you have recorded a gesture, not established an authorization contract.
+
+Good **human-in-the-loop AI** requires a relationship between a particular person, a particular proposed action, a particular set of resources, and a limited period of validity. The interface is how that relationship becomes understandable.
+
+## Start with the consequence, not the tool name
+
+A tool called `update_record` tells a reviewer almost nothing. What record? Which fields? Who can see the result? Can it be reversed? Does it trigger another system?
+
+The reviewable unit should be a consequence: send this message to these recipients, publish this document version to this audience, or change these fields from their current values to these proposed values.
+
+A useful approval screen contains the exact target, the material change, the relevant evidence, and any consequence that will be hard to undo. It also distinguishes facts the system verified from assumptions the model made.
+
+This does not require a wall of security prose. A readable diff, a clear destination, and a short explanation of uncertainty can communicate more than a frightening paragraph that everyone learns to ignore.
+
+**My hot take: an approval flow that optimizes only for fewer clicks is measuring the wrong thing.** The goal is fewer unnecessary interruptions and better decisions at the interruptions that remain.
+
+## Bind approval to an immutable proposal
+
+Create the proposal before requesting approval. Give it a stable identity and store the canonical action payload, resource versions, policy context, and expiry.
+
+The following is an illustrative application record, not a provider-specific format:
+
+```json
+{
+  "proposal_id": "proposal-example-17",
+  "operation": "send_document",
+  "target": "recipient@example.invalid",
+  "artifact_id": "artifact-example-42",
+  "artifact_version": 7,
+  "payload_digest": "sha256:example-digest",
+  "requested_by": "user-example-4",
+  "expires_at": "2026-10-07T09:30:00Z"
+}
+```
+
+The digest must be computed from the execution-relevant canonical fields, not copied from the model's output. The model may suggest a proposal; trusted application code resolves the real resource identifiers and creates the authoritative representation.
+
+Store the human's decision separately, referencing this proposal. Record who approved it, when, under which authentication context, and whether they had authority over the target. A valid session alone does not establish that authority.
+
+If the recipient, document version, scope, or other material field changes, create a new proposal. Do not quietly mutate an already approved one.
+
+## Revalidate when execution becomes possible
+
+Approval can sit in a queue. During that time, access may be revoked, the target may change, or the proposal may expire.
+
+At dispatch, verify that the proposal is still valid, the approver is still authorized where your policy requires current authorization, the resources still match the approved versions, and no other execution has consumed the same action identity.
+
+This is the time-of-check/time-of-use problem in practical form: “it was allowed earlier” and “it is allowed now” are different statements.
+
+A database transaction can atomically claim a proposal and create its durable execution record. It cannot magically make an unrelated external API part of that transaction. Where the destination supports conditional updates, send the expected resource version. Where it supports idempotency keys, bind retries to the same logical operation. AWS's idempotency discussion explains why caller intent and retry identity need to be treated explicitly.[1]
+
+Where neither feature exists, be honest about the weaker guarantee. Serialize actions where useful, reconcile ambiguous outcomes, and require fresh review when the remaining uncertainty materially changes the risk.
+
+<ArticleDiagram stem="12-human-in-the-loop-ai-approval-authorization" alt="Approval binds a person to a proposal; dispatch rechecks validity before the external effect." />
+
+## Make the state machine visible enough to trust
+
+A proposal might move through these states:
+
+```text
+proposed → awaiting_review → approved → dispatching → completed
+                 ↘ rejected      ↘ expired       ↘ outcome_unknown
+```
+
+The real system may need more detail. The important point is that `approved` does not mean `completed`, and `dispatching` does not guarantee that the destination accepted the action.
+
+If a request times out after reaching an external service, tell the user that the outcome is being checked. An immediate “failed, retry?” button can encourage the exact duplicate you need to prevent.
+
+Similarly, a revoked approval cannot reverse an already delivered message. Cancellation means stopping work that can still be stopped. Rollback means compensating for an effect that has already happened. Those are different capabilities and deserve different language.
+
+## Approval should not pin an expensive runtime
+
+A person may respond in seconds, hours, or not at all.
+
+Do not keep a worker occupied in a polling loop just because the task is waiting for a decision. Persist the proposal and task state, release the worker, and resume through a durable event or reconciliation path after a decision arrives.
+
+Browser workflows may make this harder. An authenticated page can expire, a form can change, and a session can become unsafe to retain. Store enough information to reconstruct and revalidate the intended action, but do not assume a screenshot grants permission to recreate a stale browser state.
+
+For sensitive browser interactions, a handoff to a human-controlled session may be clearer than an agent trying to narrate every field. Ownership must still be exclusive: once the human takes control, stale agent commands should be rejected rather than racing with the person.
+
+## Two tabs are a concurrency test
+
+Imagine the same proposal open in two browser tabs. One tab approves it; the other rejects it a moment later. Or two authorized reviewers click approve simultaneously.
+
+The backend needs a conditional transition from the expected proposal state and version. One decision wins according to the policy; the other receives the current state. Frontend button disabling is a convenience, not a concurrency guarantee.
+
+For actions that require two reviewers, model that requirement explicitly. Two clicks by the same principal should not accidentally satisfy a two-person rule. For delegated approval, distinguish the person acting from the person or organization whose authority they exercise.
+
+Keep the resulting audit trail understandable. A reviewer should be able to answer, “What did I approve?” without reconstructing a conversation from dozens of model messages.
+
+## Interrupt according to risk and uncertainty
+
+Not every tool call needs a dialog.
+
+Reading an authorized document and sending a message to an external recipient are not equivalent. Neither are a reversible draft edit and a destructive update. Repeatedly interrupting for low-consequence operations teaches users that approval screens are routine obstacles.
+
+Define policy using consequence, scope, reversibility, uncertainty, and the user's explicit intent. An operation can require review because the destination is new, the blast radius is large, or the agent had to infer a critical parameter—not merely because its function name appears on a list.
+
+The MCP tool specification places human control and clear presentation of tool actions among its safety considerations.[2] The application still has to decide which concrete actions require which level of review. A protocol does not know the consequences of your domain.
+
+Where standing permissions are appropriate, make them narrow and inspectable: allowed targets, bounded operation types, maximum scope, expiry, and a straightforward revocation path. “Always allow this agent” is a poor substitute for designing those limits.
+
+## Measure review quality, not just acceptance
+
+A 99% approval rate might mean excellent proposals. It might also mean nobody reads the dialog.
+
+Look at correction frequency, rejected proposals, time spent understanding the change, approvals invalidated by resource changes, ambiguous outcomes, and avoidable interruptions. Sample whether people can explain what they approved. A comprehension test can expose problems that conversion metrics conceal.
+
+Use synthetic scenarios to test the flow: change a document between approval and dispatch, revoke access while work is queued, replay the approval request, open two tabs, and lose the network after the destination accepts an action.
+
+The pass condition is not always “the operation completes.” Sometimes it is “the operation stops, the uncertainty is visible, and the user has a safe next step.”
+
+## The human is a decision-maker, not an exception handler
+
+The strongest approval flows do not ask a person to compensate for vague system state. They narrow the decision until a person can make it responsibly.
+
+Here is the proposed change. Here is the destination. Here is the evidence. Here is what cannot easily be undone. Approve this exact version, edit it, or decline it.
+
+That is better UX because it is better authorization design. The safety mechanism and the product experience are not competing layers. When the contract is clear, they reinforce each other.
+
+### Technical notes
+
+[1] AWS Builders' Library, [Making retries safe with idempotent APIs](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/). The approval and dispatch architecture above is an application design, not a guarantee supplied by every destination API.
+
+[2] Model Context Protocol, [Tools specification, version 2025-06-18](https://modelcontextprotocol.io/specification/2025-06-18/server/tools). Referenced for tool presentation and human-control considerations; protocol support does not establish application authorization.
+
+
+## Continue reading
+
+[Deterministic Infrastructure for AI Agents: Make Every Action Accountable](/blog/architecting-deterministic-infrastructure/)

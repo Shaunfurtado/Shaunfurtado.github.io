@@ -1,0 +1,54 @@
+<button id="theme-toggle" class="phase-toggle" type="button" aria-label="Switch appearance">
+  <span class="phase-aperture" aria-hidden="true"><span></span></span>
+</button>
+<div id="phase-transition" class="phase-transition" aria-hidden="true"></div>
+
+<script>
+  const root = document.documentElement;
+  const themeToggle = document.getElementById('theme-toggle');
+  const mediaQuery = window.matchMedia('(prefers-color-scheme: light)');
+  let phaseChanging = false;
+
+  function systemTheme() {
+    return mediaQuery.matches ? 'light' : 'dark';
+  }
+
+  function storedTheme() {
+    try {
+      return localStorage.getItem('theme');
+    } catch {
+      return null;
+    }
+  }
+
+  function setTheme(theme: string, persist = true) {
+    root.dataset.theme = theme;
+    if (persist) {
+      try {
+        localStorage.setItem('theme', theme);
+      } catch {}
+    }
+    themeToggle?.setAttribute('aria-label', `Switch to ${theme === 'light' ? 'dark' : 'light'} appearance`);
+  }
+
+  themeToggle?.addEventListener('click', () => {
+    if (phaseChanging) return;
+    const next = (root.dataset.theme || systemTheme()) === 'light' ? 'dark' : 'light';
+    phaseChanging = true;
+    root.dataset.nextTheme = next;
+    root.classList.add('phase-shifting');
+    window.setTimeout(() => setTheme(next), 260);
+    window.setTimeout(() => {
+      root.classList.remove('phase-shifting');
+      delete root.dataset.nextTheme;
+      phaseChanging = false;
+    }, 720);
+  });
+
+  mediaQuery.addEventListener('change', () => {
+    if (!storedTheme()) setTheme(systemTheme(), false);
+  });
+
+  requestAnimationFrame(() => root.classList.add('theme-ready'));
+  setTheme(root.dataset.theme || systemTheme(), false);
+</script>

@@ -1,0 +1,186 @@
+---
+title: 'Python RQ in Production: Simple Queues, Explicit Guarantees'
+description: Use Python RQ in production with durable task records, safe retries,
+  JSON serialization, queue fairness, and a clear boundary between jobs and workflows.
+pubDate: '2026-10-13'
+tags:
+- python
+- redis
+- distributed-systems
+- software-architecture
+- backend-development
+author: Shaun Furtado
+draft: false
+canonicalURL: https://shaunfurtado.is-a.dev/blog/python-rq-production-scaling-patterns/
+heroImage: /blog-assets/covers/05-python-rq-production-scaling-patterns.png
+heroImageAlt: 'Simple queues. Explicit guarantees. — Python RQ in Production: Simple
+  Queues, Explicit Guarantees; an editorial diagram cover by Shaun Furtado.'
+seoTitle: 'Python RQ in Production: Scaling and Safe Retries'
+series: Systems in Practice
+articleId: 5
+---
+import ArticleDiagram from '/src/components/ArticleDiagram.astro';
+
+
+I like a queue that can be explained without a slide deck.
+
+A function runs somewhere else. The caller gets a job identifier. Workers consume jobs. Failures and retries are visible. That is a useful starting point for a surprising amount of application infrastructure.
+
+Python RQ is attractive because it keeps that mental model small. Its documented interface supports ordinary Python functions, named queues, job timeouts, result retention, and dependencies.[1]
+
+The interesting question is not whether RQ is “enterprise enough.” It is which guarantees belong to the queue, which belong to the application, and whether you have confused the two.
+
+## Put the durable task before the transient attempt
+
+A report request can outlive a worker, a deploy, or a queue entry.
+
+I would give it an application-owned task record with the requester, inputs, status, timestamps, output references, and any relevant authorization. The queue carries the identifier needed to execute that task. It should not be the only place where the user's intent exists.
+
+This separation makes recovery less mysterious. A reconciler can find a task that is still pending even when its queue metadata has disappeared. The interface can show a durable result after the queue's result retention expires. A new execution attempt can remain linked to the same user request.
+
+There is a catch: writing a task record and enqueueing a job are two operations in different systems. A crash between them creates a gap.
+
+A transactional outbox is one way to close that gap. Commit the task and an enqueue intent together in the application's durable store. A dispatcher reads that intent and submits work. Since dispatch itself can be repeated, execution still needs duplicate tolerance.
+
+This is not a feature RQ is supposed to invent for your application. It is a boundary you need to design around it.
+
+## Keep the job payload small and boring
+
+Pass stable identifiers and simple data. Do not enqueue a database session, a request object, an open browser, or an enormous document when a scoped reference will do.
+
+The worker resolves the task under application policy, loads the approved inputs, and records its attempt. That gives you a place to recheck cancellation, expiry, and current ownership before expensive work begins.
+
+Here is an illustrative producer fragment:
+
+```python
+import os
+from uuid import UUID
+
+from redis import Redis
+from rq import Queue, Retry
+from rq.serializers import JSONSerializer
+
+
+def enqueue_report(task_id: str) -> str:
+    # The task has already been authorized and persisted.
+    task_uuid = UUID(task_id)
+    connection = Redis.from_url(
+        os.environ["REDIS_URL"],
+        socket_connect_timeout=3,
+        socket_timeout=5,
+    )
+    queue = Queue(
+        "reports",
+        connection=connection,
+        serializer=JSONSerializer,
+    )
+    job = queue.enqueue(
+        "tasks.build_report",
+        str(task_uuid),
+        job_timeout=180,
+        ttl=600,
+        result_ttl=3600,
+        failure_ttl=86400,
+        retry=Retry(max=3, interval=[5, 20, 60]),
+    )
+    return job.id
+```
+
+The durations are example values, not production defaults. `tasks.build_report` must exist in the worker's installed code. The caller does not get to choose that function name.
+
+The worker must use the same serializer. For delayed retry intervals, run the required scheduler support; RQ documents that dependency explicitly.[2]
+
+```bash
+rq worker --url "$REDIS_URL" \
+  --serializer rq.serializers.JSONSerializer \
+  --with-scheduler reports
+```
+
+Do not log a Redis URL containing credentials. Configure the deployment's secret handling, transport, connection behavior, and worker lifecycle separately from this small example.
+
+## JSON serialization is not authorization
+
+RQ uses pickle by default and warns against connecting workers to an untrusted Redis instance. It also supports a JSON serializer.[3]
+
+Using JSON reduces a particular deserialization risk. It does not make a queue safe for arbitrary public producers. A job still identifies work that the worker will execute. Only trusted application components should be able to enqueue jobs, and the application should expose a narrow, authenticated API rather than exposing Redis itself.
+
+Likewise, a queue name is not a tenant boundary. Tenant identity belongs in the durable task and in every data-access check. Separate queues can improve scheduling, but they do not replace authorization.
+
+**A simple queue is a good thing. A simple story about security is not always a true one.**
+
+## Retries require an action model
+
+A retry is useful when the previous attempt can be repeated safely.
+
+It is not automatically safe because the exception looked transient. A network timeout can happen before a remote action, during it, or after the remote service accepts it. Only the first case clearly establishes that nothing happened.
+
+For an internal report calculation, repeating work may be acceptable if publication is protected by an idempotent commit. For an external notification or write, use the remote service's idempotency mechanism where available and preserve the logical action identifier across retries. Otherwise, reconcile the outcome or require a human decision.
+
+AWS's discussion of idempotent APIs is a useful reference for why retries need stable request intent rather than a guess based on transport failure.[4]
+
+A custom queue job identifier or enqueue deduplication can prevent some duplicate scheduling. It is not equivalent to exactly-once effects at an external service. Keep those claims separate.
+
+## Do not let a parent consume the capacity its children need
+
+Agent workflows make an old scheduling problem easy to rediscover.
+
+A parent job starts several child jobs and waits for them. Other parents do the same. Soon every worker is waiting, while the children are queued behind the parents.
+
+The system can look busy without being able to make progress.
+
+A separate child queue with reserved workers is one solution. Another is to persist the parent's waiting state and resume it when the children finish. The latter uses capacity more efficiently but requires a more explicit orchestration model.
+
+<ArticleDiagram stem="05-python-rq-production-scaling-patterns" alt="Durable task and outbox feed RQ; workers claim attempts, execute bounded work, and publish through a durable result path." />
+
+Choose deliberately. A thread added to “just wait for the child” does not remove the capacity dependency; it may only hide it.
+
+## Queue priority is a product decision
+
+Interactive work should not necessarily wait behind a large batch export. Conversely, batch work should not starve forever because interactive jobs keep arriving.
+
+I would separate workload classes when their latency or resource needs differ substantially. Reserve some capacity for important background work. Track waiting time and completion rate by class, not just the total number of workers.
+
+For very long tasks, consider splitting work at meaningful checkpoints. “Meaningful” matters: splitting a transaction into arbitrary pieces can make recovery harder. A checkpoint should identify completed work, remaining work, and the authority required to continue.
+
+RQ's simplicity is an advantage when these boundaries remain understandable in application code. It becomes a disadvantage when the surrounding code grows into an unacknowledged workflow engine.
+
+## Scale processes only after measuring the bottleneck
+
+Standard RQ workers process one job at a time; concurrency generally comes from running more workers or using an appropriate documented worker arrangement.[3] More workers are useful only when the rest of the system can support them.
+
+Measure queue age, execution duration, worker availability, Redis latency, external rate limits, and runtime acquisition failures. A pool of browser jobs can be limited by memory. A data pipeline can be limited by a database. An agent workflow can spend most of its time waiting on model calls.
+
+A regional worker deployment can be lightweight. It still needs a clear Redis and durable-state topology. Sending every coordination operation across a slow or unreliable wide-area connection is not a free route to “edge scale.” RQ is a Python worker system, not a promise that ordinary workers run inside every serverless edge runtime.
+
+## Retention settings are part of operations
+
+Completed results, failed jobs, and queued work have different lifetimes. RQ exposes separate controls for them.[1]
+
+A successful job's short result lifetime may be entirely appropriate when the real report is stored elsewhere. Failure information may need a different retention policy, especially when it can contain sensitive arguments or exception text. A queued task that becomes useless after a deadline should not execute hours later merely because it eventually reached the front.
+
+Monitor Redis memory and establish a policy compatible with queue state. Treating the same Redis instance as an aggressively evicting disposable cache can conflict with the queue's role. Persistence and recovery deserve their own tests.
+
+## Know the point at which simplicity stops helping
+
+RQ is a strong candidate when Python workers, straightforward queues, and application-owned recovery fit the problem.
+
+I would consider a more specialized workflow or messaging system when I need durable execution spanning long waits, complex fan-in and compensation, cross-language routing, or operational guarantees that require too much custom machinery around the queue.
+
+That is not a failure of RQ. It is a sign that the problem has changed.
+
+The best reason to choose a small tool is not that it can be stretched indefinitely. It is that its limits are visible, and you can operate comfortably inside them.
+
+## Technical notes
+
+[1] [RQ: queues, jobs, timeouts, and retention](https://python-rq.org/docs/).
+
+[2] [RQ: exceptions and retries](https://python-rq.org/docs/exceptions/).
+
+[3] [RQ: worker behavior and serializers](https://python-rq.org/docs/workers/).
+
+[4] [AWS Builders' Library: idempotent APIs](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/).
+
+
+## Continue reading
+
+[Deterministic Infrastructure for AI Agents: Make Every Action Accountable](/blog/architecting-deterministic-infrastructure/)

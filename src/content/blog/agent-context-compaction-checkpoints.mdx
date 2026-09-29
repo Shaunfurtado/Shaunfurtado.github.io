@@ -1,0 +1,170 @@
+---
+title: 'Agent Context Compaction: Treat Summaries as Checkpoints'
+description: Build safer agent context compaction with validated summaries, explicit
+  history coverage, atomic checkpoint commits, and recovery that never drops history
+  silently.
+pubDate: '2026-12-01'
+tags:
+- ai-agents
+- llm
+- distributed-systems
+- software-architecture
+- context-engineering
+author: Shaun Furtado
+draft: false
+canonicalURL: https://shaunfurtado.is-a.dev/blog/agent-context-compaction-checkpoints/
+heroImage: /blog-assets/covers/09-agent-context-compaction-checkpoints.png
+heroImageAlt: 'Summaries are checkpoints — Agent Context Compaction: Treat Summaries
+  as Checkpoints; an editorial diagram cover by Shaun Furtado.'
+seoTitle: Agent Context Compaction as a Checkpoint
+series: Systems in Practice
+articleId: 9
+---
+import ArticleDiagram from '/src/components/ArticleDiagram.astro';
+
+
+A summary can read beautifully and still be a bad checkpoint.
+
+Suppose an agent spends forty minutes comparing options. The user changes a constraint, a source contradicts an earlier estimate, and one proposed action remains unapproved. The context grows large, so a summarizer compresses the conversation into six fluent paragraphs.
+
+The summary preserves the main conclusion. It drops the exception, softens the contradiction, and describes the proposed action as part of the plan. The next model invocation has less text and a worse understanding of what it is allowed to do.
+
+For **agent context compaction**, readability is not the primary acceptance test. Recoverability is.
+
+## Define what compaction is allowed to lose
+
+Some history is expendable. Repeated navigation messages, verbose formatting, and superseded intermediate calculations may no longer matter to the next step.
+
+Other state is not expendable: active user constraints, unresolved blockers, authorization status, evidence supporting a consequential claim, and the exact identity of an artifact the user approved.
+
+I would keep those critical items in explicit task state where possible. A summary can refer to them, but it should not be their only surviving representation.
+
+This turns compaction from “shorten the transcript” into a more precise operation: replace a portion of the model-facing trajectory with a smaller representation while preserving the ability to continue the task correctly.
+
+The durable evidence record is not deleted just because it is no longer in the prompt. Retention and access policies still apply, but context pressure alone should not rewrite history.
+
+## A checkpoint needs a coverage boundary
+
+A summary should say which events it covers.
+
+Without that boundary, the next context builder cannot distinguish already-compacted history from new evidence. It can duplicate events, skip them, or summarize a previous summary repeatedly while losing the connection to original inputs.
+
+A compact checkpoint record might contain:
+
+```json
+{
+  "checkpoint_id": "checkpoint_12",
+  "covers_through_event": 318,
+  "schema_version": 2,
+  "projector_version": "context-v5",
+  "summary": {
+    "accepted_decisions": [],
+    "open_questions": ["Confirm the required delivery date."],
+    "evidence_refs": ["ev_27", "ev_61"],
+    "pending_action_refs": ["action_9"]
+  }
+}
+```
+
+The empty decision list is valid. The summarizer should not invent a decision to make the structure look complete.
+
+The coverage boundary identifies input history, not proof that every important fact survived. Validation still needs to check the resulting representation and preserve critical state outside the summary.
+
+## Generate first, commit second
+
+Compaction is a state transition. Treat it like one.
+
+Read a consistent source range. Generate a candidate summary. Validate its shape and required references. Record the summary and its coverage boundary atomically. Only then build future context from the new checkpoint plus the uncovered tail.
+
+<ArticleDiagram stem="09-agent-context-compaction-checkpoints" alt="A candidate checkpoint is generated and validated before an atomic commit; failure keeps the previous boundary and uncovered history." />
+
+If another event arrives during generation, it remains beyond the checkpoint boundary and belongs in the tail. Do not silently mark it covered because the summarizer finished later in wall-clock time.
+
+If two compaction attempts race, use a version check or equivalent atomic rule so an older candidate cannot overwrite a newer accepted checkpoint.
+
+The database operation is often simpler than the language-model operation. It is also the part that determines whether a restart can reconstruct the intended context.
+
+## An empty summary must not advance history
+
+This is the failure case I would test first.
+
+A summarizer times out or returns empty content. The application catches the exception, preserves the previous summary, and advances the “covered through” marker anyway. It looks resilient because the chat did not fail. In reality, some history has disappeared from the model's recoverable view.
+
+The safe fallback preserves both the previous checkpoint and its original boundary. Newly uncovered events must remain available to the next context construction.
+
+When there is no room for all of them, the system has to make an explicit choice: retrieve selectively, postpone a nonessential operation, switch to a documented reduced mode, or pause because it cannot safely continue. Silently discarding an active constraint is not graceful degradation.
+
+**A compaction fallback is successful only when it preserves the meaning of “what we still know.”**
+
+Keeping the interface responsive is not enough.
+
+## Compact at semantic boundaries
+
+A raw character cutoff can split a tool call from its result, a question from its answer, or a user correction from the statement it supersedes.
+
+Prefer complete interaction groups or task events. Preserve the message relationships required by the provider adapter. Do not place a summary in a position that makes quoted source text appear to be a new high-priority instruction.
+
+For a current in-flight operation, the latest tool exchange may deserve to remain intact until the next step completes. Older completed segments are easier to compact safely.
+
+This is a reason to model the trajectory structurally rather than storing it as one large string. Compaction should understand enough about the boundaries to avoid tearing through them.
+
+## Structured does not mean verified
+
+A JSON object with a `facts` field can still contain false facts.
+
+Schema validation can establish that a list exists and references have the expected format. It cannot establish that a source supports the statement, that a number has the right unit, or that a user actually approved the action.
+
+I would separate extracted observations from inferred conclusions. Preserve source references for numerical claims. Keep contradictions visible rather than asking the summarizer to resolve them for the sake of a tidy narrative.
+
+For critical constraints, compare the candidate checkpoint against durable task state. A summary that says an action is approved should be corrected or rejected when the approval ledger says pending. The summary does not get to promote itself into authority.
+
+This is also where a smaller or cheaper summarization model needs evaluation. Its lower cost is useful only if the task's important distinctions survive.
+
+## Reuse a checkpoint until something justifies changing it
+
+Regenerating a summary at every turn can create semantic drift and avoidable request churn.
+
+An accepted checkpoint can remain stable while new events accumulate in a recent tail. When the tail grows beyond the chosen budget, the system can compact another completed segment or create a new checkpoint over an explicitly defined range.
+
+Hierarchical summaries can help with long histories, but every extra summarization layer risks losing detail. Maintain routes to original evidence, not only a chain of summaries of summaries.
+
+Anthropic's context-engineering guidance discusses compaction and structured note-taking as approaches to long-running tasks.[1] My design preference is to pair those language-level techniques with transactional checkpoint metadata. That is what makes failure and resumption explainable.
+
+## Retrieval is the other half of compression
+
+A compact representation can omit detail safely only when the system can recover that detail when needed.
+
+Give evidence a stable, authorized retrieval path. A question about an exact number should retrieve the source result or relevant passage rather than ask the model to reconstruct it from a vague sentence in the checkpoint.
+
+Retrieval should be bounded and scoped. Returning the entire old conversation every time a summary is insufficient defeats the context budget. Returning a small passage without enough surrounding context can also mislead. The right interface supports focused search and controlled expansion.
+
+A retrieval failure should be visible. “The source is no longer available” is different from “the source confirms the claim.”
+
+## Measure continuation quality
+
+A summary quality score alone is not enough. Evaluate what the agent does after compaction.
+
+Use tasks where the important constraint is old, where a recent instruction supersedes an earlier one, where two sources disagree, and where approval remains pending. Compare continuation behavior before and after compaction under the same fixture.
+
+Measure retrieval success for exact facts, preservation of constraints, unsupported claims, invalid action attempts, and the cost of rebuilding context. Also test summary-generation failure, duplicate compaction attempts, and a restart between candidate generation and commit.
+
+The desired result is not identical prose. It is equivalent task-relevant state and safe continuation.
+
+## A smaller context is useful only when it is still the right context
+
+There is a temptation to celebrate compression ratios: ten times smaller, twenty times smaller, an entire session in a paragraph.
+
+A paragraph that loses the pending approval is not a better representation. A longer checkpoint with clear evidence references may be the cheaper choice once you account for recovery, repeated work, and mistakes.
+
+Compaction should spend detail carefully, not destroy it indiscriminately.
+
+The real achievement is being able to pause a complicated task, resume it under a bounded context window, and still know which facts are supported, which decisions are settled, and which actions have not been authorized.
+
+## Technical notes
+
+[1] [Anthropic: compaction and structured notes in context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents).
+
+
+## Continue reading
+
+[Context Engineering for AI Agents: Build a Working View, Not a Bigger Transcript](/blog/context-engineering-ai-agents-working-state/) · [Prompt Caching for AI Agents: Optimize the Prefix, Not the Dashboard](/blog/prompt-caching-ai-agents-prefix-cache-hit-rate/)

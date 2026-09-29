@@ -1,0 +1,151 @@
+---
+title: 'Autoscaling AI Workers: Queue Length Is Not a Capacity Plan'
+description: Autoscale AI workers using queue age, work estimates, runtime headroom,
+  and safe draining. Separate admission and placement from adding more replicas.
+pubDate: '2026-12-15'
+tags:
+- infrastructure
+- distributed-systems
+- ai-agents
+- devops
+- scalability
+author: Shaun Furtado
+draft: false
+canonicalURL: https://shaunfurtado.is-a.dev/blog/autoscaling-ai-workers-queue-age-capacity/
+heroImage: /blog-assets/covers/04-autoscaling-ai-workers-queue-age-capacity.png
+heroImageAlt: 'Queue length is not capacity — Autoscaling AI Workers: Queue Length
+  Is Not a Capacity Plan; an editorial diagram cover by Shaun Furtado.'
+seoTitle: Autoscaling AI Workers Beyond Queue Length
+series: Systems in Practice
+articleId: 4
+---
+import ArticleDiagram from '/src/components/ArticleDiagram.astro';
+
+
+One hundred queued jobs is not a capacity plan.
+
+Those jobs might be tiny metadata reads, minute-long browser sessions, or memory-heavy document conversions. A queue length collapses all of that work into a single integer. Scaling directly from that integer can add too little capacity, too much capacity, or exactly the wrong kind.
+
+For **autoscaling AI workers, browsers, and sandboxes**, I prefer to ask a different question: how much work is waiting, how quickly is more arriving, and which resource prevents it from finishing?
+
+## Three control loops, not one replica count
+
+There are at least three decisions in a system like this.
+
+**Admission** decides whether a new task can be accepted. **Placement** decides which worker or execution pool can run it. **Scaling** decides whether additional capacity should be created.
+
+These loops need related information, but they operate at different speeds. Rejecting an over-budget request can happen immediately. Assigning a warm browser can take a short scheduling step. Adding a host can take much longer.
+
+A replica scaler cannot protect the next few seconds of overload by itself. The system still needs queue limits, concurrency limits, timeouts, and a refusal path while new capacity is starting.
+
+Likewise, a concurrency semaphore is not autoscaling. It can stop excessive work from starting, but it does not create the resources needed to drain the backlog.
+
+## Measure waiting time alongside waiting count
+
+Queue age is often closer to the user's problem than queue length.
+
+A short queue whose oldest job has waited several minutes can indicate a stuck worker, an unavailable execution profile, or starvation. A large queue that drains in a fraction of a second may not be a problem at all.
+
+I would track queue age by workload class, arrival rate, service time, active jobs, failed acquisitions, and available execution slots. For browser and sandbox work, I would also track startup latency separately from task runtime.
+
+Do not average interactive work together with batch jobs. The user waiting for a report preview and the overnight export pipeline have different latency expectations. They may also need different runtime images and resource limits.
+
+A single queue can still be appropriate early on. The important step is to preserve enough classification that you can see when it stops being appropriate.
+
+## A rough model is better than an unexplained threshold
+
+For planning, estimate the concurrency required to serve incoming work and drain the existing backlog:
+
+```text
+incoming_work = arrival_rate * mean_service_time
+backlog_work  = queued_service_seconds / drain_target_seconds
+
+estimated_slots = ceil(
+    (incoming_work + backlog_work) / target_utilization
+)
+```
+
+The units matter. Arrival rate is jobs per second. Service time is seconds per job. Their product estimates occupied slots. The backlog term is also measured in slots.
+
+For a synthetic example, suppose jobs arrive at 0.5 per second and take 8 seconds on average. That is about 4 occupied slots for incoming demand. Suppose the queued work totals 240 service-seconds and you want to drain it in 60 seconds. That adds another 4 slots. At a planning utilization of 0.7, the estimate rounds up to 12 slots.
+
+This is a fluid approximation, not a latency guarantee. Bursty arrivals, heavy-tailed runtimes, cold starts, and shared bottlenecks can make the estimate wrong. Use it to explain a controller's intent, then validate it with workload measurements and load tests.
+
+**A scaling rule should have a unit you can explain. “Queue bigger than twenty” is rarely enough.**
+
+## Apply hard ceilings after estimating demand
+
+Demand does not create memory.
+
+The target must respect the pool's memory budget, CPU constraints, runtime startup capacity, external-service quotas, tenant limits, and the operator's cost ceiling. Some constraints are instantaneous; others are rate budgets over time.
+
+For memory, use measured workload envelopes and retain headroom for the host and control services. Total host memory is not the same as currently available memory. An average per-session footprint is not a safe maximum when a minority of pages are much larger.
+
+When telemetry is unavailable, decide explicitly whether to stop new admissions, use a conservative fallback, or degrade to a different permitted task. Do not interpret missing data as unlimited capacity.
+
+Rate-limited model calls require a separate governor. Doubling worker replicas can make provider throttling worse rather than improving throughput. Waiting workers also continue to hold resources unless the execution design releases them.
+
+## Separate cheap orchestration from expensive execution
+
+A queue worker does not have to contain the browser or sandbox it coordinates.
+
+<ArticleDiagram stem="04-autoscaling-ai-workers-queue-age-capacity" alt="Admission routes tasks to separate execution pools; metrics drive scaling, while hard budgets constrain all pools." />
+
+A lightweight orchestration worker can request a browser session or sandbox slot from a broker. The broker owns the expensive runtime and its lifecycle. This makes the resource boundary visible and lets each pool scale according to its own limits.
+
+There is a trade-off: the orchestration worker may sit blocked while the external runtime works. That can be acceptable for a simple synchronous design. At higher concurrency, persisting a waiting state and resuming from completion events may use fewer worker slots. The extra state-machine complexity should be justified by measured pressure.
+
+Adding an asynchronous framework everywhere is not automatically the simpler option. Keeping every long-running task attached to a process is not automatically the cheaper one either.
+
+## Scaling down is where state becomes inconvenient
+
+Starting a new replica is usually easier than safely removing an old one.
+
+A worker may own a job, a browser may hold an authenticated session, and a sandbox may be collecting an output. Killing those resources indiscriminately turns a routine scale-down into a recovery incident.
+
+Use draining: stop accepting new work, allow bounded in-flight work to complete, then reclaim the runtime. For tasks that cannot finish inside the drain window, define checkpointing or interruption behavior and preserve an honest terminal state.
+
+An idle browser is not necessarily disposable. It may be waiting for a human to complete authentication. That is a product state with a deadline, not simply a low-CPU process.
+
+Keep hysteresis and stabilization in the scaling loop so small fluctuations do not cause constant churn. Kubernetes' horizontal autoscaler supports resource and custom metrics as well as configurable scaling behavior; adopting it still requires choosing appropriate signals and limits.[1]
+
+## Warm capacity is an economic choice
+
+A warm pool buys lower startup latency with idle resource cost and additional cleanup obligations.
+
+The right size depends on arrival patterns, startup distributions, how long tasks run, and whether runtime reuse is safe. A large warm pool is wasteful when requests are infrequent. A zero-sized pool can make every interactive request pay the cold-start cost.
+
+Measure the portion of user-visible latency attributable to startup before optimizing it. When a task spends most of its time waiting on a remote site or model, shaving a little off container creation may not matter much.
+
+I would also distinguish a warm image cache from a reusable authenticated runtime. Keeping an image locally available is not the same risk as keeping a logged-in browser ready for reuse.
+
+## “Edge” needs a concrete meaning
+
+Running workers near users or data can be useful. It does not make a central Redis connection insensitive to network latency or partitions.
+
+For regional deployment, decide which region owns a task, where its durable state lives, and what happens when the connection to that state disappears. An isolated region should not continue executing privileged work indefinitely on the assumption that its ownership is still valid.
+
+A lightweight queue can fit small regional nodes. That is different from running a conventional Python worker inside an edge-isolate environment that does not support its process model.
+
+Use the word edge only when you can explain the placement and failure behavior it describes.
+
+## The controller should be boring under stress
+
+A good load test includes a burst of expensive jobs, not only a steady stream of average ones. It includes slow runtime startup, a failed metrics source, a quota-limited provider, and a scale-down while work is active.
+
+Look for oscillation, starvation, excessive retries, and a growing population of workers that are alive but not making progress. Check whether admission limits protect the system while scaling catches up.
+
+Most importantly, test the user's view. A queue can be operationally healthy while presenting an indefinite spinner. Show whether a task is queued, starting a runtime, executing, waiting for approval, or blocked by a limit.
+
+Autoscaling is successful when the system meets its service goals within a resource budget. The replica graph is only one piece of evidence.
+
+## Technical notes
+
+[1] [Kubernetes: horizontal pod autoscaling](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/).
+
+Docker Compose profiles can selectively enable services; they are not an autoscaling controller. See [Docker's profiles documentation](https://docs.docker.com/compose/how-tos/profiles/).
+
+
+## Continue reading
+
+[Python RQ in Production: Simple Queues, Explicit Guarantees](/blog/python-rq-production-scaling-patterns/) · [AI Code Sandboxes: Docker Is a Starting Point, Not a Complete Security Story](/blog/ai-code-sandboxes-docker-security-boundary/)

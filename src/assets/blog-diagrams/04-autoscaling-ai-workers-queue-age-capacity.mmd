@@ -1,0 +1,13 @@
+flowchart TB
+    work["Incoming work<br/>class + deadline"]
+    admit["Admission<br/>tenant + global limits"]
+    place["Placement<br/>runtime headroom"]
+    pools["Worker and runtime<br/>pools"]
+    measure["Queue age + work<br/>quota + saturation"]
+    scale["Scale out / drain<br/>within constraints"]
+    work --> admit
+    admit -->|"accepted"| place
+    place -->|"reserve slot"| pools
+    pools -->|"observations"| measure
+    measure --> scale
+    scale -.->|"change capacity"| pools

@@ -1,0 +1,14 @@
+flowchart TB
+    change["Candidate release<br/>versioned configuration"]
+    contracts["Deterministic tests<br/>authority + ownership"]
+    failures["Stateful scenarios<br/>timeouts + races + replay"]
+    trials["Model task trials<br/>independent outcome checks"]
+    evidence["Failure breakdown<br/>quality + latency + cost"]
+    gate["Release decision<br/>hard gates + known limits"]
+    change --> contracts
+    change --> failures
+    change --> trials
+    contracts --> evidence
+    failures --> evidence
+    trials --> evidence
+    evidence --> gate

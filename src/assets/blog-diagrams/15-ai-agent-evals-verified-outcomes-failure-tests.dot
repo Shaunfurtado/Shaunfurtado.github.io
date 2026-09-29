@@ -1,0 +1,21 @@
+digraph design {
+graph [rankdir=TB, bgcolor="#f6f4ee", pad="0.32", nodesep="0.42", ranksep="0.55", splines=polyline, fontname="DejaVu Sans", fontsize=18];
+node [shape=box, style="rounded,filled", fillcolor="#ffffff", color="#b9c8c4", penwidth=1.3, fontname="DejaVu Sans", fontsize=17, margin="0.20,0.16"];
+edge [color="#58736e", fontname="DejaVu Sans", fontsize=12, arrowsize=0.7, penwidth=1.4];
+change [label="Candidate release\nversioned configuration",fillcolor="#16352f",fontcolor="#ffffff",color="#16352f"];
+contracts [label="Deterministic tests\nauthority + ownership"];
+failures [label="Stateful scenarios\ntimeouts + races + replay"];
+trials [label="Model task trials\nindependent outcome checks"];
+evidence [label="Failure breakdown\nquality + latency + cost"];
+gate [label="Release decision\nhard gates + known limits"];
+change -> contracts [label=""];
+change -> failures [label=""];
+change -> trials [label=""];
+contracts -> evidence [label=""];
+failures -> evidence [label=""];
+trials -> evidence [label=""];
+evidence -> gate [label=""];
+{rank=same; change;}
+{rank=same; contracts; failures; trials;}
+{rank=same; evidence; gate;}
+}

@@ -1,0 +1,157 @@
+---
+title: 'On-Demand Subagents: Delegate Work, Not Authority'
+description: Design on-demand subagents with narrow tasks, scoped evidence, bounded
+  budgets, cancellation ownership, and results the parent can verify before publishing.
+pubDate: '2026-11-24'
+tags:
+- ai-agents
+- llm
+- software-architecture
+- distributed-systems
+- engineering
+author: Shaun Furtado
+draft: false
+canonicalURL: https://shaunfurtado.is-a.dev/blog/on-demand-subagents-delegation-authority/
+heroImage: /blog-assets/covers/10-on-demand-subagents-delegation-authority.png
+heroImageAlt: 'Delegate work, not authority — On-Demand Subagents: Delegate Work,
+  Not Authority; an editorial diagram cover by Shaun Furtado.'
+seoTitle: 'On-Demand Subagents: Scope, Budgets, and Evidence'
+series: Systems in Practice
+articleId: 10
+---
+import ArticleDiagram from '/src/components/ArticleDiagram.astro';
+
+
+A parent agent asks three subagents to investigate a question. They return three polished answers. The parent combines them into a fourth polished answer.
+
+What improved?
+
+Possibly coverage. Possibly latency. Possibly nothing. If all three children saw the same sources, repeated the same search, and inherited the same mistaken assumption, the architecture may have bought expensive agreement.
+
+For **multi-agent systems**, I want delegation to have a reason that survives removing the word agent from the diagram.
+
+## A subagent is a scoped unit of work
+
+I find it more useful to think of a child agent as a worker with a task contract, a bounded context, a set of permitted capabilities, and a result format.
+
+A role name such as “senior researcher” is not enough. It does not explain which question the child should answer, what evidence it needs, what it may do, or when it should stop.
+
+A stronger delegation asks for something observable: compare two published service-level definitions, extract a specific table, verify a calculation against supplied inputs, or identify contradictions among a bounded set of documents.
+
+These tasks can be parallelized when their inputs and outputs are sufficiently independent. A tightly coupled problem with shared evolving state may work better in one context.
+
+**More agents is a resource decision, not a quality guarantee.**
+
+The architecture should justify the coordination cost.
+
+## Create children from contracts, not theatrical personas
+
+On-demand generation is useful when the parent can compose a child configuration from approved pieces: a goal, a skill version, selected evidence, a permitted tool set, and a budget.
+
+The parent can propose that configuration. The application validates it. A generated instruction cannot install an arbitrary tool, widen data access, or remove an execution limit.
+
+Here is an illustrative request:
+
+```json
+{
+  "goal": "Compare the response-time definitions in two documents.",
+  "input_evidence": ["ev_31", "ev_32"],
+  "skill_version": "document-comparison@3",
+  "requested_capabilities": ["evidence.read", "text.search"],
+  "deadline_seconds": 90,
+  "max_tool_calls": 8,
+  "output_contract": "comparison-findings-v1",
+  "may_delegate": false
+}
+```
+
+The child receives the effective permissions computed by the server, not necessarily every capability it requested. Empty authorization should mean no authorization, not an invitation to fall back to all available tools.
+
+A useful rule is that a child's authority cannot exceed the authority actually delegated to it by the parent and allowed by current policy. The server must enforce that relationship at execution time.
+
+## Give each child only the context it needs
+
+Copying the entire parent transcript into every child is convenient. It can also be wasteful, distracting, and unnecessarily broad in access.
+
+A child comparing two documents needs those documents, the comparison question, relevant constraints, and the output contract. It probably does not need unrelated browser activity, private notes from another task, or the parent's entire tool history.
+
+Keep a route for requesting additional evidence. The parent or broker can approve that request under the same data-access policy. This makes missing information explicit rather than encouraging the child to fill gaps with plausible assumptions.
+
+Subagent context isolation can help limit irrelevant history, a pattern discussed in context-engineering guidance.[1] It is not a security boundary by itself. The child tools and evidence retrieval still need real authorization.
+
+## Partition the budget before launching work
+
+A parent with a fixed budget cannot safely give every child the same full budget.
+
+Reserve funds or token allowances atomically when launching children. Track usage and return unused reservations under a defined policy. Cap total concurrent children, total depth, wall-clock lifetime, and expensive tool families.
+
+Different budgets measure different things. A low token cap does not prevent a browser session from remaining open. A tool-call cap does not prevent one unbounded tool result. A deadline does not stop a stale worker unless the executor checks it.
+
+When children can delegate further, fan-out becomes a tree rather than a list. The remaining budget and authority need to propagate down that tree. For many applications, disabling recursive delegation initially is the easier design to operate.
+
+## Parent and child lifetimes should be connected
+
+Cancelling a parent should cancel or revoke its children according to a documented policy. A late child result should not publish into a task that has already been cancelled or superseded.
+
+Bind the child to the parent's execution generation. On result submission, check that the parent still expects that child and that the result belongs to the correct attempt.
+
+If the parent restarts, it should discover existing children through durable state rather than spawn a duplicate set because its local memory is empty. This is where a task graph earns its place: it records ownership and completion, not just a visually appealing topology.
+
+<ArticleDiagram stem="10-on-demand-subagents-delegation-authority" alt="A parent allocates bounded child contracts; child findings return through validation before synthesis and publication." />
+
+## Require evidence-bearing results
+
+A child's prose should not become authoritative merely because another model produced it.
+
+I would require a result status, findings, evidence references, unresolved issues, and any relevant calculation inputs. A completed status should mean the requested work met its acceptance conditions. A child that could not access a source should return blocked or partial, not a graceful-sounding substitute for evidence.
+
+The parent validates the structure and checks whether referenced evidence exists and is accessible. For consequential claims, it should verify support, not just count citations.
+
+A result can be well-formed and still be wrong. Schema validation eliminates one class of failure; evidence checks and task-specific evaluation handle others.
+
+## Keep shared writes out of the children by default
+
+Two children editing the same report can overwrite each other. Two children publishing different versions can leave the interface in a state neither intended.
+
+A cleaner default is for children to produce immutable candidate outputs. The parent owns reconciliation and publication. When shared state is necessary, use explicit concurrency control and narrow write responsibilities.
+
+This also improves the user's experience. There is one place that decides which findings make it into the final artifact and which remain unresolved. The interface does not need to reconcile competing child claims of completion.
+
+The parent is not automatically correct, of course. Its synthesis needs its own acceptance checks. Centralizing publication simply makes responsibility visible.
+
+## Diversity has to come from the work
+
+Assigning different role names does not guarantee independent evidence.
+
+For a source-review task, useful diversity can come from distinct source sets or independent verification methods. One child extracts terms; another checks a deterministic calculation; a third searches specifically for contradictory evidence.
+
+Even then, correlated failure remains possible. The children may share a model, a retrieval index, or an incorrect task assumption. Agreement is a signal to inspect, not a proof.
+
+I would rather launch two children with clearly different responsibilities than five children instructed to “think independently” while seeing identical inputs.
+
+## Queue design can make delegation deadlock
+
+A parent that waits synchronously for children can occupy the worker capacity those children need. Enough parents can fill the pool while their children remain queued.
+
+Reserve child capacity, use separate queues, or persist the parent's waiting state and resume it when results arrive. Each option has an operational cost. Choose based on concurrency and task duration, not on which diagram looks more agentic.
+
+The same applies to browser and sandbox slots. A parent holding a scarce runtime while waiting for children may waste more resources than the child model calls themselves.
+
+## Prove that delegation helped
+
+Compare a single-agent baseline against the delegated version on the same tasks. Measure completion quality, evidence support, total cost, wall-clock latency, duplicate work, and the frequency of blocked or abandoned children.
+
+Test cancellation, parent restart, malformed child output, budget exhaustion, and a child that returns after the parent has moved on. Include tasks where delegation should not occur.
+
+The strongest multi-agent system may be one that often chooses a single worker. That is not a lack of sophistication. It is evidence that delegation is serving the task rather than defining the product.
+
+## Technical notes
+
+[1] [Anthropic: subagents and context isolation](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents).
+
+For tool contracts and implementation responsibilities, see the [Model Context Protocol tools specification](https://modelcontextprotocol.io/specification/2025-06-18/server/tools). This article's delegation and budget contracts are illustrative application designs, not a claim that the protocol implements them.
+
+
+## Continue reading
+
+[Python RQ in Production: Simple Queues, Explicit Guarantees](/blog/python-rq-production-scaling-patterns/) · [Context Engineering for AI Agents: Build a Working View, Not a Bigger Transcript](/blog/context-engineering-ai-agents-working-state/)

@@ -1,0 +1,152 @@
+---
+title: 'Skills and Adaptive Tool Visibility: Discovery Is Not Permission'
+description: Design skill-based agents with progressive tool discovery, versioned
+  procedures, stable tool profiles, and authorization that is independent of visibility.
+pubDate: '2026-12-08'
+tags:
+- ai-agents
+- llm
+- security
+- software-architecture
+- developer-tools
+author: Shaun Furtado
+draft: false
+canonicalURL: https://shaunfurtado.is-a.dev/blog/skills-adaptive-tool-visibility-agent-authorization/
+heroImage: /blog-assets/covers/11-skills-adaptive-tool-visibility-agent-authorization.png
+heroImageAlt: 'Discovery is not permission — Skills and Adaptive Tool Visibility:
+  Discovery Is Not Permission; an editorial diagram cover by Shaun Furtado.'
+seoTitle: Adaptive Tool Visibility and Skill-Based AI Agents
+series: Systems in Practice
+articleId: 11
+---
+import ArticleDiagram from '/src/components/ArticleDiagram.astro';
+
+
+A model does not need every tool definition your application owns on every turn.
+
+A question about a document should not necessarily arrive with schemas for account administration, report publishing, browser control, scheduling, and every experimental integration added during development.
+
+The obvious response is dynamic tool selection. The less obvious requirement is keeping that selection separate from authorization.
+
+For **skill-based agents and adaptive tool visibility**, I use three distinct concepts: what the agent knows exists, what it currently sees in detail, and what it is permitted to execute.
+
+## A skill is a procedure with a version
+
+A skill can describe how to perform a recurring class of work: compare documents, inspect a dataset, build a chart, or verify a claim against evidence.
+
+It can include instructions, examples, prerequisites, suggested tools, and output expectations. It should also have a version and a review history. Otherwise, a small edit to a shared instruction file can change many workflows without leaving a clear explanation.
+
+The skill is not a security grant. “Use the publishing tool” in a skill document does not authorize the current user to publish the current artifact.
+
+I would store the skill's identity and version in the run record. Reproducing a failure then means reconstructing the instruction that actually ran, not reading whatever the skill contains today.
+
+## Load detail progressively
+
+A useful catalog entry can be short: name, purpose, input expectations, and the situations in which the skill is useful. The agent loads the full procedure when it chooses to use it.
+
+Tool definitions can follow a similar pattern. A small stable core provides discovery and basic task control. Task profiles attach a bounded set of schemas. Additional tools can be discovered when the task genuinely needs them.
+
+Anthropic's advanced-tool-use discussion describes tool discovery as a way to avoid loading large catalogs indiscriminately.[1] The application-level lesson is broader than any particular provider feature: discovery and execution should be separate interfaces with separate budgets.
+
+A tool discovery result should identify approved registry entries. It should not be executable code or an arbitrary function path that the model can submit directly to a worker.
+
+## Selection is a relevance problem
+
+A selector can use explicit task type, skill metadata, lexical matching, embeddings, or a combination. Each has failure modes.
+
+A keyword rule can confuse “delete the word schedule from this draft” with a request to modify a scheduled job. Semantic similarity can retrieve a broadly related tool that does not support the required operation. A model-based router can misunderstand the task or generate a nonexistent capability name.
+
+Validate every selected identifier against the registry. Preserve a fallback discovery path so a mistaken initial selection does not make the task impossible. Avoid silently attaching the entire catalog when selection is uncertain; that hides the failure and defeats the original goal.
+
+The selector's objective is to make the right tools easy to choose. It is not to establish permission.
+
+## Authorization is a separate intersection
+
+For a requested operation, effective authority should reflect current identity, task scope, resource access, policy, and runtime availability.
+
+A simplified pure function illustrates the set relationship:
+
+```python
+def effective_capabilities(
+    requested: set[str],
+    delegated: set[str],
+    authorized: set[str],
+    available: set[str],
+) -> set[str]:
+    return requested & delegated & authorized & available
+```
+
+This is not a complete authorization engine. Real policy can depend on arguments, resource versions, risk class, approval state, and time. The point is that relevance does not expand authority, and an empty allowed set remains empty.
+
+The executor must perform the current check. The model may still remember a tool definition after permission has been revoked. Hiding it from the next prompt does not revoke an in-flight call.
+
+<ArticleDiagram stem="11-skills-adaptive-tool-visibility-agent-authorization" alt="Skill discovery and tool selection improve relevance; a separate execution gate checks authority before dispatch." />
+
+**A tool that is invisible is not necessarily inaccessible. A tool that is visible is not necessarily authorized.**
+
+Conflating those statements is a common way to build a prompt-shaped permission system.
+
+## Stable profiles can reduce churn
+
+Dynamic selection does not have to mean rebuilding every schema list from scratch on every turn.
+
+A few versioned profiles can cover common workflows. Keep their order and definitions stable. Add a small number of discovered capabilities when necessary. This can simplify debugging and make request assembly more predictable.
+
+The trade-off is between minimal input and selection overhead. An extremely narrow profile may force repeated discovery calls. An extremely broad one may overwhelm tool choice. Measure both tool-selection quality and end-to-end task cost.
+
+A profile can also be a useful review artifact. An engineer can inspect what a “document analysis” task will normally see without tracing a large collection of ad hoc conditions.
+
+Profiles remain suggestions to the model, not permission bundles that bypass current resource checks.
+
+## Tool descriptions are interfaces
+
+A tool's name, description, arguments, and result shape influence how the model uses it.
+
+Describe the operation precisely. Say whether it reads or writes, what resources it expects, how failure is reported, and whether the result is a snapshot. Avoid ambiguous names such as `manage_item` when the actual operation is `archive_report`.
+
+Return structured failures that the agent can act on: missing permission, unavailable runtime, invalid version, required approval, or source not found. A generic string saying “something went wrong” invites guessing.
+
+The Model Context Protocol tools specification defines schema-based interfaces and discusses security considerations, including validation and human control.[2] A protocol-compatible schema is still only one layer of the application contract.
+
+A syntactically valid call can be unauthorized. A successful transport response can contain a failed operation. Make those distinctions visible.
+
+## Skills can become a supply-chain problem
+
+A shared skill may include instructions, references, and executable helpers. That makes installation and updates consequential.
+
+Treat external skill content as untrusted until reviewed. Do not let retrieved documents overwrite active procedures. Pin versions, identify dependencies, and define which capabilities a skill can request. Executable helpers need the same review and isolation appropriate to any other code.
+
+Automatic improvement should produce a proposal, not silently rewrite the active skill because a model found a more convincing sentence. Evaluate the candidate on representative tasks, review the diff, and preserve rollback to a known version.
+
+A feedback loop that changes instructions without controlled activation is not necessarily learning. It may be an unreviewed deployment mechanism.
+
+## Measure the misses you do not see
+
+Tool selection can look efficient because the prompt is smaller while task quality quietly declines.
+
+Build fixtures that require a rarely used capability, a sequence spanning two profiles, and a task whose wording contains a misleading keyword. Include cases where no tool should be used at all.
+
+Measure whether the necessary capability becomes available, how many discovery steps are needed, whether the model chooses an incorrect tool, and whether unauthorized attempts are rejected. Track schema volume, but do not make token reduction the only success metric.
+
+For skills, test version changes against old tasks as well as new ones. A procedure optimized for one successful demonstration can damage a different workflow that depended on the previous instruction.
+
+## The experience should remain legible
+
+Progressive disclosure is not only for the model. It can help the user understand what is happening.
+
+A task can show which skill is active, why another capability is being requested, and whether an action needs approval. This is more useful than exposing a giant raw tool log or presenting the agent as an unknowable sequence of decisions.
+
+Keep the language ordinary. “Loading the document comparison procedure” is clearer than announcing a complex internal routing mechanism. The user needs the relevant state, not every implementation detail.
+
+The architecture is doing its job when the model sees enough to act competently, the executor remains in control of authority, and the user can understand the important transitions.
+
+## Technical notes
+
+[1] [Anthropic: advanced tool use and tool discovery](https://www.anthropic.com/engineering/advanced-tool-use).
+
+[2] [Model Context Protocol: tools specification](https://modelcontextprotocol.io/specification/2025-06-18/server/tools).
+
+
+## Continue reading
+
+[Context Engineering for AI Agents: Build a Working View, Not a Bigger Transcript](/blog/context-engineering-ai-agents-working-state/) · [Prompt Caching for AI Agents: Optimize the Prefix, Not the Dashboard](/blog/prompt-caching-ai-agents-prefix-cache-hit-rate/)

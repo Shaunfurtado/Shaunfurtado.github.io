@@ -1,0 +1,175 @@
+---
+title: 'Prompt Caching for AI Agents: Optimize the Prefix, Not the Dashboard'
+description: Improve prompt caching with stable prefixes and honest measurement. Distinguish
+  request hits, token reuse, provider accounting, and actual cost savings.
+pubDate: '2026-10-06'
+tags:
+- ai-agents
+- llm
+- performance
+- software-architecture
+- engineering
+author: Shaun Furtado
+draft: false
+canonicalURL: https://shaunfurtado.is-a.dev/blog/prompt-caching-ai-agents-prefix-cache-hit-rate/
+heroImage: /blog-assets/covers/08-prompt-caching-ai-agents-prefix-cache-hit-rate.png
+heroImageAlt: 'A 95% hit rate needs a denominator — Prompt Caching for AI Agents:
+  Optimize the Prefix, Not the Dashboard; an editorial diagram cover by Shaun Furtado.'
+seoTitle: 'Prompt Caching for AI Agents: Prefixes and Metrics'
+series: Systems in Practice
+articleId: 8
+---
+import ArticleDiagram from '/src/components/ArticleDiagram.astro';
+
+
+“95% cache hit rate” is an impressive number until you ask what was counted.
+
+It might mean that 95% of requests reused at least a small prefix. It might mean that 95% of all input tokens were read from cache. It might exclude cold starts, failed requests, or providers that do not report cache usage. Those are very different claims.
+
+For **prompt caching in AI agents**, I care about two things: arranging requests so useful content can be reused, and measuring the result without flattering the system.
+
+The first is an architecture problem. The second is an accounting problem.
+
+## Caching is not remembering an answer
+
+Prompt caching reuses eligible processing of repeated input. It is not the same as returning a previously generated answer, and it does not make an old fact current.
+
+Provider behavior differs. OpenAI documents model-dependent caching rules, eligible prefixes, cache accounting, and retention controls.[1] Anthropic documents prefix-based caching and separate usage fields for cache reads, cache creation, and uncached input.[2]
+
+Those differences belong in a provider adapter and in your measurements. Avoid building a universal cost formula around a field name that happens to exist in one API.
+
+The portable design principle is simpler: keep genuinely stable content stable, put changing content where it belongs, and verify actual reuse through reported usage rather than assuming the provider cached what you intended.
+
+## Find the accidental cache breakers
+
+A prompt assembled from live application state can change near its beginning on every request.
+
+A timestamp in the system instructions. A randomly ordered tool catalog. A workspace snapshot serialized with unstable ordering. A generated sentence saying how many tasks are active. A user preference copied into a shared prefix even though it differs by user.
+
+Each may be useful information. The mistake is placing it in the supposedly stable portion of the request.
+
+I would split assembly into a versioned instruction layer, stable tool-profile definitions, task history or checkpoints, retrieved evidence, and a current-state tail. The exact arrangement depends on provider rules and instruction priority. Moving dynamic data later must not turn an untrusted source into a higher-priority instruction or hide a current constraint.
+
+<ArticleDiagram stem="08-prompt-caching-ai-agents-prefix-cache-hit-rate" alt="Stable instructions and tool profiles precede task history and a dynamic tail; telemetry measures actual cached and uncached token categories." />
+
+The objective is not to freeze the entire task. It is to stop changing the parts that did not need to change.
+
+## Make prefix stability testable
+
+A small pure function can catch accidental serialization churn. This example accepts JSON-compatible configuration and deliberately rejects non-finite numbers:
+
+```python
+import hashlib
+import json
+from typing import Any
+
+
+def prefix_fingerprint(config: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        config,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+```
+
+This is an application diagnostic, not a reproduction of any provider's cache key. It does not prove that two API requests will reuse the same internal cache entry. It tells you whether the configuration you intended to keep stable actually changed.
+
+Keep the actual ordered tool schema, instruction version, model configuration, and adapter version in the diagnostic record. A hash without enough version information to explain it is not especially useful.
+
+Do not reorder arrays indiscriminately. Tool order or message order may have meaning. Stable serialization is about preserving a deliberate representation, not sorting everything until it looks deterministic.
+
+## Tool visibility and cache reuse pull in different directions
+
+Exposing fewer tools can reduce input size and make selection easier. Changing the tool set on every small shift in the user's wording can also change the cached prefix.
+
+I prefer a small set of stable task profiles over an entirely new catalog on every turn. A research profile, an artifact profile, and a read-only data profile can have predictable schemas. A discovery tool can help the model request additional capabilities when necessary.
+
+The application still authorizes every invocation. Keeping a tool schema stable does not mean keeping permission stable. A revoked capability should be denied even when the model has seen its definition for the last ten turns.
+
+This is one reason to keep permissions out of informal prompt-only state. A cache optimization should not preserve authority beyond its lifetime.
+
+## Report at least two hit rates
+
+Define the request-level rate as:
+
+```text
+request_hit_rate = requests_with_cache_reads / observed_requests
+```
+
+Define the token-weighted rate as:
+
+```text
+cached_input_share = total_cache_read_tokens / total_input_tokens
+```
+
+The denominator needs a provider-aware definition. In Anthropic's documented usage accounting, total input combines cache-read, cache-creation, and uncached input tokens; its `input_tokens` field alone is not the total.[2] Other APIs may report total input with cached tokens nested as a subset.[1]
+
+Here is a synthetic example. There are 100 requests, each with 20,000 input tokens. Ninety-five requests reuse 1,000 tokens, and five reuse none. The request hit rate is 95%. The cached input share is only 95,000 divided by 2,000,000: **4.75%**.
+
+That is not a disappointing cache necessarily. It is a misleading headline if presented as 95% of input being reused.
+
+Conversely, one long request can dominate a token-weighted metric. Report both, along with the request count and workload distribution.
+
+## Missing telemetry is not a zero and not a hit
+
+A provider or gateway may omit cache details. A streaming response may end before usage arrives. Some requests may pass through a route that normalizes fields differently.
+
+Mark those observations as unknown. Track coverage: what fraction of requests and total known input have usable cache accounting? Do not silently treat missing fields as zero in one dashboard and exclude them from another.
+
+A useful reporting record includes provider, model, operation class, input categories, output tokens, whether usage was reported, and the measurement window. Keep identifiers and aggregation dimensions within your privacy policy.
+
+Separate main-agent calls, child-agent calls, compaction calls, and retry attempts. A high cache rate on repeated parent context can coexist with expensive uncached subagent work.
+
+## Savings require a counterfactual
+
+Token reuse is not identical to money saved.
+
+A cost model should include uncached input, cache reads, cache writes where charged, output, and any other relevant provider fees. Compare against the cost of the same useful workload without reuse, using the applicable rate card and billing units.
+
+```text
+observed_cost = uncached_input_cost
+              + cache_read_cost
+              + cache_write_cost
+              + output_cost
+              + other_applicable_costs
+```
+
+Do not publish a fixed savings percentage without stating the model, pricing basis, dates, and workload. The important comparison is cost per successful task, not cost per request that happens to reach the API.
+
+A cache optimization that causes extra reasoning turns, unnecessary tool calls, or a drop in completion quality can be a bad trade even while cached input share rises.
+
+## Compaction creates a deliberate discontinuity
+
+Long-running context eventually needs reduction. Replacing an old trajectory with a summary can change a large part of the reusable prefix.
+
+That is not a reason to avoid compaction indefinitely. It is a reason to make checkpoints deliberate and to reuse a valid checkpoint until new evidence or a budget threshold justifies another.
+
+Repeatedly paraphrasing the same historical state creates avoidable churn. A versioned summary tied to an evidence boundary is easier to debug, evaluate, and reuse than a fresh literary retelling at every turn.
+
+The decision should balance current context cost, future reuse, summary-generation cost, and the risk of losing important information. It should not maximize cache percentage at the expense of the task.
+
+## The number worth publishing
+
+I would consider a cache claim ready for publication when it includes the definition, observation window, request count, provider and model scope, cold-start treatment, telemetry coverage, and quality checks.
+
+A reproducible synthetic benchmark can be useful when production data is private. Label it synthetic and publish the generator or fixture. A verified production aggregate can be useful when it is authorized for disclosure. Neither should pretend to be the other.
+
+**I would rather publish a modest number with a denominator than a spectacular one that cannot survive a second question.**
+
+High cache reuse is worth engineering. The professional signal is not the percentage alone. It is understanding which architecture produced it, which costs it reduced, and what it did not prove.
+
+## Technical notes
+
+[1] [OpenAI: prompt caching and usage behavior](https://developers.openai.com/api/docs/guides/prompt-caching).
+
+[2] [Anthropic: prompt caching and token accounting](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
+
+Provider details were checked on September 29, 2026. Recheck supported fields, retention, and pricing before implementing or publishing provider-specific measurements.
+
+
+## Continue reading
+
+[Deterministic Infrastructure for AI Agents: Make Every Action Accountable](/blog/architecting-deterministic-infrastructure/)

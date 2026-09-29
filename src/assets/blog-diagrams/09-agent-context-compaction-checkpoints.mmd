@@ -1,0 +1,13 @@
+flowchart TB
+    prior["Current checkpoint<br/>+ coverage boundary"]
+    candidate["Build candidate<br/>from bounded history"]
+    validate["Validate coverage<br/>constraints + tool groups"]
+    commit["Conditional atomic<br/>checkpoint commit"]
+    continue["Continue from<br/>accepted checkpoint"]
+    retain["On failure: retain<br/>old summary + boundary"]
+    prior --> candidate
+    candidate --> validate
+    validate -->|"pass"| commit
+    validate -->|"fail"| retain
+    commit -->|"version matches"| continue
+    commit -.->|"conflict"| retain

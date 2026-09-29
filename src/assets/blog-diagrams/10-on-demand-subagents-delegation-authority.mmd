@@ -1,0 +1,13 @@
+flowchart TB
+    parent["Parent task<br/>current owner"]
+    contract["Child contract<br/>scope + evidence + budget"]
+    children["Bounded child tasks<br/>no authority expansion"]
+    results["Typed results<br/>evidence + limitations"]
+    review["Parent verifies<br/>and publishes"]
+    cancel["Cancellation<br/>owned descendants"]
+    parent -->|"decompose"| contract
+    contract -->|"reserve budget"| children
+    children --> results
+    results --> review
+    parent --> cancel
+    cancel -.->|"revoke current work"| children

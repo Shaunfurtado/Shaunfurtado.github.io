@@ -1,0 +1,159 @@
+---
+title: 'Context Engineering for AI Agents: Build a Working View, Not a Bigger Transcript'
+description: Design agent context as a bounded working view with authoritative constraints,
+  evidence references, output reserves, and valid tool-call relationships.
+pubDate: '2026-10-27'
+tags:
+- ai-agents
+- llm
+- software-architecture
+- context-engineering
+- engineering
+author: Shaun Furtado
+draft: false
+canonicalURL: https://shaunfurtado.is-a.dev/blog/context-engineering-ai-agents-working-state/
+heroImage: /blog-assets/covers/07-context-engineering-ai-agents-working-state.png
+heroImageAlt: 'Context is a working view — Context Engineering for AI Agents: Build
+  a Working View, Not a Bigger Transcript; an editorial diagram cover by Shaun Furtado.'
+seoTitle: 'Context Engineering for AI Agents: Working State'
+series: Systems in Practice
+articleId: 7
+---
+import ArticleDiagram from '/src/components/ArticleDiagram.astro';
+
+
+A transcript is an excellent record of what happened. It is not automatically a good description of what an agent needs to know next.
+
+An hour-long task can accumulate search results, page extracts, failed attempts, intermediate calculations, user corrections, and artifacts. Sending all of it back to the model preserves volume, not necessarily relevance. Sending only the final assistant messages preserves readability while discarding the evidence those messages depended on.
+
+The useful alternative is to treat **agent context as a materialized view**: a bounded, purpose-built representation derived from durable task state and evidence.
+
+## Keep three representations with three jobs
+
+The event record exists for accountability and recovery. It should preserve the necessary observations, actions, references, and state changes under an explicit retention and redaction policy.
+
+The interface projection exists for the user. It explains progress, presents results, and exposes appropriate detail without overwhelming the page.
+
+The model projection exists for the next decision. It contains the relevant task constraints, current state, recent interaction, and selected evidence within a budget.
+
+These projections overlap, but they should not be identical by accident. A debug event useful to an operator may be irrelevant to the model. A full document useful for audit may need only a compact excerpt and a retrieval handle in the next turn. A secret should not become visible merely because one projection is called “full.”
+
+<ArticleDiagram stem="07-context-engineering-ai-agents-working-state" alt="Durable events feed separate user, audit, and model projections; model context can retrieve bounded evidence on demand." />
+
+The word materialized is useful because it encourages concrete questions: what inputs produced this view, which version of the projector was used, and when should it be rebuilt?
+
+## Facts need handles, not just summaries
+
+Suppose an agent compares two service contracts. Early in the conversation, it reads a clause limiting a particular support commitment to business hours. Later, the user asks whether the proposed plan covers an overnight incident.
+
+A summary saying “reviewed support terms” is not enough. The context needs either the relevant clause or a reliable route back to it.
+
+I would represent evidence with an identifier, source reference, retrieval time, version or digest where available, and a compact description. The model-facing item should say when it is truncated and how to retrieve more.
+
+```json
+{
+  "kind": "evidence_digest",
+  "evidence_id": "ev_204",
+  "summary": "Priority response applies during business hours.",
+  "source_version": "document-revision-6",
+  "retrieved_at": "2026-10-06T09:15:00Z",
+  "truncated": true,
+  "retrieval_handle": "evidence_204_section_8"
+}
+```
+
+The summary is a convenience. The source remains the authority. Retrieval must recheck access under the current principal; a handle cannot be a permanent bypass around authorization.
+
+## Distinguish constraints from observations
+
+A user instruction such as “Do not send the report until I approve it” is not the same kind of state as “The page currently shows three reports.”
+
+The first is an active task constraint. The second is a timestamped observation. A good context builder does not flatten both into a bag of sentences and hope the model preserves their status.
+
+Maintain explicit categories for user constraints, accepted decisions, unresolved questions, evidence, proposed actions, and completed actions. When an observation becomes stale or a decision is superseded, preserve that relationship rather than leaving contradictory statements side by side without explanation.
+
+This also makes long-running work easier to resume. The agent can see what remains open without reconstructing the entire conversation from prose.
+
+**The context window should not be your application's only database.**
+
+If a fact matters to correctness, give it a durable representation and a defined update path.
+
+## Budget for the next step, not the last one
+
+Filling the available input window is not the objective.
+
+The system needs room for the next tool result, provider-required message structures, and the output it expects the model to produce. Context limits and accounting differ by model and API; token counting should use the relevant provider or tokenizer rather than treating a character heuristic as a hard guarantee.
+
+A useful planning equation is:
+
+```text
+model_input_budget = context_limit
+                   - output_reserve
+                   - next_tool_reserve
+                   - safety_margin
+```
+
+This is an application budgeting model, not a universal provider formula. The adapter must account for the selected API's actual rules.
+
+Within that budget, allocate deliberately. Stable policy, the active user request, current task state, recent tool exchanges, and retrievable evidence compete for space. A giant low-value page extract should not displace the instruction that the user is still waiting to approve publication.
+
+Track which categories were reduced and whether the next action still has enough evidence. “The request fit” is a transport success, not proof of context quality.
+
+## Project tool results before they become a habit
+
+Different tools deserve different projections.
+
+A search result can provide a query, a small set of result identifiers, and short descriptions. A calculation can provide input references, a result, units, and warnings. A browser read can provide page identity, relevant visible text, and an observation reference. An artifact operation can provide a manifest and validation status.
+
+A generic “first few thousand characters” projector is a reasonable fallback, but it often cuts the wrong thing. It may preserve boilerplate and lose the table row that answers the question.
+
+Typed projectors can prioritize the fields the next decision actually needs. They should preserve uncertainty and failure. An empty result must not become a confident sentence merely because the projection schema requires a summary.
+
+Keep provider-required tool-call and result associations intact. Shrinking a transcript should not create an invalid conversation structure or silently change which output belongs to which call.
+
+## Stable projections make changes inspectable
+
+When the same evidence item is projected twice under the same rules, it should produce the same representation.
+
+That helps debugging and can support prefix reuse in systems with compatible prompt caching. It also makes a context diff meaningful: a change reflects new state or a new projector version rather than random formatting churn.
+
+Version the projector. Do not rewrite old audit records when a display format changes. Rebuild the derived view and record which version produced it.
+
+Redaction complicates the idea of immutable evidence. Sensitive content may require deletion or access restriction. Treat immutability as a property within the retention and data-governance policy, not a promise that nothing can ever be removed.
+
+## Retrieval should return the missing evidence, not another flood
+
+A retrieval tool can search within the current task's authorized evidence and return a bounded window around a match. The agent can expand when needed.
+
+The important limits are scope, relevance, and size. Searching every historical task by default can introduce unrelated material and privacy risk. Returning an entire transcript because one phrase matched defeats the purpose of bounded context.
+
+For exact identifiers, dates, and numbers, lexical search can be valuable. Semantic retrieval can help with paraphrased questions. A hybrid system can combine both, but it still needs a test set that reflects the questions users ask.
+
+Do not equate a high similarity score with a verified fact. The retrieved passage must support the claim, remain accessible to the user, and be fresh enough for the task.
+
+## The hard part is deciding what not to include
+
+Context selection is an engineering policy, not just a prompt-writing exercise. It decides which information can influence the next action.
+
+A recent but irrelevant tool failure may deserve less space than an older constraint. A large document may be less useful than three cited passages. A model-generated summary may be less trustworthy than a small structured result from a deterministic calculation.
+
+Anthropic's context-engineering discussion treats context as a finite resource and describes approaches including retrieval, compaction, and structured notes.[1] The application-level implication I draw is that those mechanisms need explicit state contracts. Otherwise, the system has several ways to move text around and no clear rule for what must survive.
+
+## Test context as an interface
+
+I would build fixtures where the required fact is old, the latest page is irrelevant, two sources disagree, and a user changes a constraint midway through the task.
+
+Check the next action, not only the summary's fluency. Can the agent retrieve the source for a number? Does it preserve a prohibition? Does it recognize that an earlier observation is stale? Does an unauthorized evidence handle fail closed?
+
+The goal is not perfect memory. It is enough relevant, trustworthy, recoverable state for the next decision.
+
+Once you frame context that way, the architecture becomes easier to reason about. The model receives a working view. The system remains responsible for the record.
+
+## Technical notes
+
+[1] [Anthropic: effective context engineering for AI agents](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents).
+
+
+## Continue reading
+
+[Prompt Caching for AI Agents: Optimize the Prefix, Not the Dashboard](/blog/prompt-caching-ai-agents-prefix-cache-hit-rate/)

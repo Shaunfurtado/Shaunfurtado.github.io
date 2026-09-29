@@ -1,0 +1,13 @@
+flowchart TB
+    doc["Authored document<br/>analysis snapshot"]
+    static["Static narrative<br/>authored_at"]
+    registry["Authorized subscription<br/>registry + reference counts"]
+    live["Live islands<br/>value + observed_at + state"]
+    export["Frozen export<br/>snapshots + exported_at"]
+    source["Scoped data source<br/>versions + recovery"]
+    doc -->|"preserve meaning"| static
+    doc -->|"approved references"| registry
+    source -->|"current observations"| registry
+    registry -->|"bounded updates"| live
+    static --> export
+    live -->|"freeze + label"| export

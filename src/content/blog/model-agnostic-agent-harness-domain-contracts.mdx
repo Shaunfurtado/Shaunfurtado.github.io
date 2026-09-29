@@ -1,0 +1,164 @@
+---
+title: A Model-Agnostic Agent Harness Needs More Than an API Adapter
+description: Design a model-agnostic agent harness with explicit provider capabilities,
+  durable execution contracts, domain validation, safe fallbacks, and workflow-level
+  evals.
+pubDate: '2027-01-05'
+tags:
+- ai-agents
+- software-architecture
+- llm
+- distributed-systems
+- engineering
+author: Shaun Furtado
+draft: false
+canonicalURL: https://shaunfurtado.is-a.dev/blog/model-agnostic-agent-harness-domain-contracts/
+heroImage: /blog-assets/covers/16-model-agnostic-agent-harness-domain-contracts.png
+heroImageAlt: Portability is an execution contract — A Model-Agnostic Agent Harness
+  Needs More Than an API Adapter; an editorial diagram cover by Shaun Furtado.
+seoTitle: Model-Agnostic Agent Harness Architecture
+series: Systems in Practice
+articleId: 16
+---
+import ArticleDiagram from '/src/components/ArticleDiagram.astro';
+
+
+Changing the model name in an API request is easy. Preserving the meaning of the application around that change is not.
+
+A different provider may return tool calls differently, count cached tokens differently, support a different structured-output path, or behave differently when a task needs repair. The surrounding system still has to preserve identity, policy, evidence, cancellation, and the truth of what happened.
+
+That is why a **model-agnostic agent harness** needs more than an API adapter. The adapter translates the conversation with the model. The harness owns the execution contract of the application.
+
+I would judge portability by whether those contracts survive a provider change—not by how few lines of configuration the change requires.
+
+## Decide what the model is allowed to vary
+
+A model can vary in reasoning style, wording, planning quality, and how effectively it uses the tools available to it. Those differences may change product quality and need evaluation.
+
+It should not be able to vary the meaning of authorization, which tenant owns a resource, whether an approval is still valid, or what counts as a completed external action.
+
+Put those properties in application-owned code and durable state. The model can request an operation. The harness resolves the request against the current principal, task scope, policy, and resource version before anything executes.
+
+This division also improves debugging. When the authorization engine is deterministic, a refusal can be explained through a policy decision rather than reconstructed from a model's prose.
+
+## A thin common interface is useful, but incomplete
+
+Normalize a small set of concepts: model input, streamed output, tool request, tool result, usage record, stop reason, and error category.
+
+Then preserve provider-specific information where it matters. A common field called `input_tokens` is not useful if it hides different accounting definitions. A generic error called `failed` is not enough to decide whether a retry is safe or whether the user needs to change the request.
+
+Prompt caching illustrates the problem. Anthropic documents separate fields for uncached input, cache creation, and cache reads; OpenAI's caching documentation describes its own accounting and configuration behavior.[1][2] The adapter should retain the raw provider usage and produce normalized metrics with an explicit definition.
+
+Do not force every capability into the weakest shared interface. Expose a capability record and let the workflow choose an approved path.
+
+```text
+structured_output: supported / constrained / unavailable
+tool_execution: supported / constrained / unavailable
+artifact_revision: supported / constrained / unavailable
+usage_accounting: complete / partial / unavailable
+```
+
+These are application support judgments, not claims that a provider advertises exactly these fields.
+
+## Make fallback a policy decision
+
+A fallback is not automatically safe because it produces an answer.
+
+If the primary model cannot complete a structured artifact request, the application might switch to a constrained schema, reduce the task scope, request human assistance, or use another model that passed the workflow's evaluation suite.
+
+It should not silently bypass validation, expose additional tools, or remove an approval step to keep the conversation moving.
+
+Also consider data access. A provider that is permitted for one class of content may not be permitted for another under the application's contractual and organizational policies. Route using the task's data classification and approved provider set, not only latency or price.
+
+When a fallback changes the expected quality or available capability, make that visible where it affects the user's decision. “Completed through a simpler table view” is more honest than pretending the requested interactive artifact was produced.
+
+## Keep the harness core boring
+
+The core should manage stable concepts: principals, tasks, proposals, tool execution envelopes, evidence references, artifacts, checkpoints, budgets, and lifecycle events.
+
+A tool request should carry enough context for the harness to establish authority and ownership without relying on the model to restate them. A completion should be accepted only for the current execution identity and relevant version. A cancellation should propagate through owned child work and runtime resources.
+
+The model's final answer is one projection of this state. The user interface is another. An audit record is another. None should be the sole source of truth for the others.
+
+This separation prevents provider-specific message formats from leaking into every service. You may still retain the original request and response for permitted diagnostic purposes, with appropriate access and retention controls. They should not become the only representation of the business workflow.
+
+<ArticleDiagram stem="16-model-agnostic-agent-harness-domain-contracts" alt="Provider adapters feed a policy-owning harness; domain contracts and evidence checks constrain the tools and artifacts." />
+
+## Put domain meaning in explicit modules
+
+A generic tool registry does not know whether a value is a currency amount, a percentage, a timestamp, or a count. Domain-specific systems need additional contracts.
+
+In a finance-oriented workflow, a reported amount needs a currency and a period. A return calculation needs a definition and an interval. A comparison may need to account for different units, adjustments, or reporting bases. These are examples of analytical correctness requirements, not financial recommendations.
+
+The same pattern appears elsewhere. Logistics needs shipment identity and event time. Healthcare software needs carefully controlled clinical semantics and a much broader safety and regulatory design. Support workflows need account scope and the difference between a draft reply and an issued refund.
+
+The domain module should define typed entities, authorized operations, calculation rules, evidence requirements, and publication checks. It should not merely add a paragraph of specialist vocabulary to the system prompt.
+
+## A tiny calculation shows the boundary
+
+Consider a synthetic comparison of two amounts in the same declared currency:
+
+```python
+from decimal import Decimal, InvalidOperation
+
+def percentage_change(start: str, end: str) -> Decimal:
+    """Example convention: positive finite baseline; result is percent."""
+    try:
+        baseline, final = Decimal(start), Decimal(end)
+    except InvalidOperation as exc:
+        raise ValueError("Amounts must be decimal strings") from exc
+    if not baseline.is_finite() or not final.is_finite():
+        raise ValueError("Amounts must be finite")
+    if baseline <= 0:
+        raise ValueError("This convention requires a positive baseline")
+    return (final - baseline) / baseline * Decimal("100")
+```
+
+The function intentionally chooses a narrow convention. It rejects zero and negative baselines instead of pretending one percentage-change formula is meaningful for every analytical context. It does not establish currency compatibility, period alignment, or display rounding; the surrounding typed operation must do that.
+
+The model can request this operation after the application validates the inputs. The returned evidence should include the input references and the convention used. The model explains the result rather than becoming the authority for arithmetic performed in prose.
+
+`Decimal` avoids binary floating-point representation for these decimal inputs, but its arithmetic still has a precision context. A real domain calculation should specify that context and its rounding policy. A library choice does not replace a numerical contract.[3]
+
+## Context policy also belongs to the harness
+
+A portable context builder should preserve the information the workflow needs: current instructions, authoritative constraints, active state, relevant evidence, and valid tool-call/result relationships.
+
+It should adapt to the model's supported limits without treating all message formats as interchangeable. Tool messages may need provider-specific formatting, while the underlying action and evidence records remain provider-neutral.
+
+Compaction should produce a validated checkpoint rather than an unreviewed replacement for authoritative state. Retrieval should respect the current principal. A summary that accidentally broadens permission must have no power to change the execution policy.
+
+Cache-aware serialization can then optimize stable prefixes within those correctness constraints. Do not contort the domain model to manufacture a prettier cache metric. A highly reusable prompt that omits the current resource version is efficiently wrong.
+
+## Portability has an operating cost
+
+Supporting several models creates a testing matrix. Each combination of model, prompt version, tool profile, artifact contract, and context strategy can behave differently.
+
+Reduce that matrix deliberately. Maintain a small set of approved workflow profiles rather than promising that every model supports every feature. Pin and record versions where the provider makes that possible. Re-evaluate meaningful changes instead of assuming a compatible API response implies compatible behavior.
+
+The goal is not provider neutrality at any cost. Sometimes a specialized capability justifies a provider-specific path. Keep that decision visible and contain it behind a contract so the rest of the application does not accidentally depend on it.
+
+A system can be portable without pretending its components are interchangeable commodities.
+
+## The strongest claim is the one your contracts support
+
+“Works with every model” is usually too broad to be useful. “This workflow is supported on these tested configurations, with these limits and these failure behaviors” is something an engineering team can operate.
+
+The same restraint applies to claims such as first-of-its-kind or state of the art. A clear account of authorization, context, recovery, artifacts, and evaluation demonstrates more than a superlative without a comparison methodology.
+
+The harness is where those decisions become enforceable. Models can improve, regress, or be replaced. The application still needs to know who asked, what was allowed, what ran, what changed, and what evidence supports the answer.
+
+That is the kind of portability worth building.
+
+### Technical notes
+
+[1] Anthropic, [Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
+
+[2] OpenAI, [Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching). Provider capabilities and accounting should be rechecked before deployment; this article does not claim identical behavior across providers.
+
+[3] Python, [decimal — Decimal fixed-point and floating-point arithmetic](https://docs.python.org/3/library/decimal.html). The example is a narrow numerical illustration, not a complete financial calculation policy.
+
+
+## Continue reading
+
+[Context Engineering for AI Agents: Build a Working View, Not a Bigger Transcript](/blog/context-engineering-ai-agents-working-state/) · [Model-Agnostic AI Artifacts: Give the Model a UI Contract, Not Your Frontend](/blog/model-agnostic-ai-artifacts-ui-contracts/)

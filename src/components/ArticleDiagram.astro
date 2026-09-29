@@ -1,0 +1,23 @@
+---
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { instance } from '@viz-js/viz';
+
+interface Props {
+  stem: string;
+  alt: string;
+}
+
+const { stem, alt } = Astro.props;
+if (!/^[a-z0-9-]+$/.test(stem)) throw new Error(`Invalid diagram source: ${stem}`);
+
+const dot = readFileSync(join(process.cwd(), 'src/assets/blog-diagrams', `${stem}.dot`), 'utf8');
+const viz = await instance();
+const svg = viz.renderString(dot, { format: 'svg', engine: 'dot' })
+  .replace('<svg ', '<svg aria-hidden="true" focusable="false" ');
+---
+
+<figure class="article-diagram">
+  <div class="article-diagram__canvas" set:html={svg} aria-hidden="true"></div>
+  <figcaption>{alt}</figcaption>
+</figure>

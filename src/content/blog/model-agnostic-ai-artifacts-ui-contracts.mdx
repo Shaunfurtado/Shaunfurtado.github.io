@@ -1,0 +1,163 @@
+---
+title: 'Model-Agnostic AI Artifacts: Give the Model a UI Contract, Not Your Frontend'
+description: Build model-agnostic AI artifacts with declarative schemas, trusted rendering,
+  semantic validation, revisioned edits, and structured feedback to the model.
+pubDate: '2026-12-22'
+tags:
+- ai-agents
+- frontend-development
+- software-architecture
+- ux
+- llm
+author: Shaun Furtado
+draft: false
+canonicalURL: https://shaunfurtado.is-a.dev/blog/model-agnostic-ai-artifacts-ui-contracts/
+heroImage: /blog-assets/covers/13-model-agnostic-ai-artifacts-ui-contracts.png
+heroImageAlt: 'Give the model a UI contract — Model-Agnostic AI Artifacts: Give the
+  Model a UI Contract, Not Your Frontend; an editorial diagram cover by Shaun Furtado.'
+seoTitle: Model-Agnostic AI Artifacts and UI Contracts
+series: Systems in Practice
+articleId: 13
+---
+import ArticleDiagram from '/src/components/ArticleDiagram.astro';
+
+
+A model can produce a convincing dashboard that calculates the wrong thing, loses its state on refresh, or executes code you never meant to trust.
+
+Those are three different failures. A better prompt will not fix all three.
+
+When building **model-agnostic AI artifacts**, I would rather give the model a small, explicit interface to the frontend than ask it to behave like a frontend engineer with unrestricted access to the application.
+
+That choice is sometimes described as limiting creativity. I see it as separating two jobs: the model decides what would help the user understand the work; the application decides what it is safe and meaningful to render.
+
+## The model should propose an artifact, not own the renderer
+
+An artifact can be a report, comparison table, chart, interactive form, or a canvas containing several of these. The model's output should describe the intended structure through a versioned contract.
+
+For example:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "bar_chart",
+  "title": "Completed deliveries by depot",
+  "dataset_ref": "dataset-example-12",
+  "x": {"field": "depot", "type": "category"},
+  "y": {"field": "completed_count", "type": "integer"},
+  "caption": "Completed deliveries in the selected reporting window."
+}
+```
+
+This is deliberately unglamorous. It names a supported component, references a dataset, and declares a field mapping. It does not contain JavaScript, an arbitrary network endpoint, or an expression to evaluate.
+
+The actual contract should specify what happens when the dataset is empty, a field is missing, a value is null, or the schema version is unsupported. Those conditions should not be left to the model's improvisation.
+
+## Validation has more than one layer
+
+Well-formed JSON establishes syntax. A schema establishes permitted structure and types. Neither proves that the chart answers the user's question.
+
+I separate four checks.
+
+**Structural validation** rejects unknown component kinds, missing fields, invalid values, and unreasonable sizes. Pydantic provides model validation for typed Python data structures, which is useful for this layer.[1] Be explicit about strictness and coercion; accepting the string `"12"` as a number may or may not match your contract.
+
+**Authorization validation** resolves the dataset reference under the current principal. An opaque identifier is not an access grant. The renderer must not retrieve another user's data because the model happened to name its identifier.
+
+**Semantic validation** checks that the requested operation makes sense: the field exists, its unit matches the label, the aggregation is defined, and the time window is available. A count of orders should not silently become a count of customers.
+
+**Presentation validation** checks whether the result communicates clearly enough to publish: a chart needs units, a useful title, and a legible scale. Some of these checks can be deterministic; others need human review or a bounded quality rubric.
+
+A schema is necessary. Calling it sufficient is how syntactically valid nonsense gets promoted into a polished interface.
+
+## Keep data and explanation connected
+
+The application should calculate derived values through trusted, testable operations. The model can request a supported aggregation, then explain the returned result with its evidence reference.
+
+For a percentage, preserve both numerator and denominator. For money, preserve currency and the precision policy. For a time series, preserve timezone, sampling interval, and whether missing intervals were omitted, filled, or carried forward.
+
+The artifact should reference the same validated result the model uses in its explanation. Otherwise the UI can show one value while the prose confidently describes another.
+
+This is particularly important when the model revises an artifact. A changed filter may invalidate the old caption. Treat those dependencies as application data, not a hope that the model remembers every affected sentence.
+
+## Let the renderer report back
+
+A model that cannot observe the result of its own artifact request is working half-blind.
+
+After validation and rendering, return a compact, structured report: artifact identity, revision, component type, resolved fields, units, row count, warnings, and a plain-language summary of the displayed result. Include bounded samples where they are useful and authorized.
+
+```json
+{
+  "artifact_id": "artifact-example-21",
+  "revision": 3,
+  "status": "preview_ready",
+  "resolved_rows": 8,
+  "warnings": ["Two depots have no observations in this window"],
+  "display_summary": "Eight categories; y-axis is a count, not a percentage"
+}
+```
+
+A screenshot can supplement this feedback for visual defects. It should not replace the structured representation when exact values, field mappings, or accessibility matter.
+
+This feedback loop gives a general-purpose model a way to inspect and improve an artifact without assuming it has been specially trained on your component library. It does not make every model equally good at the task; you still need workflow-level evaluation.
+
+<ArticleDiagram stem="13-model-agnostic-ai-artifacts-ui-contracts" alt="A model proposes a specification; trusted validation, data access, and rendering produce a preview and feedback." />
+
+## Make edits conditional on a revision
+
+“Change the title” sounds harmless until two actors edit the same canvas.
+
+An update request should include the artifact identity and expected revision. The application applies a bounded operation only if the revision still matches, then returns the new revision. If it does not match, return a conflict and enough current state for a deliberate retry.
+
+Prefer constrained operations such as `replace_title`, `set_filter`, or `replace_component` to arbitrary patches over the entire application state. Where a general patch format is useful, validate paths and resulting state; a valid patch document can still target a forbidden field.
+
+The model should not declare a successful edit before the application acknowledges it. “I updated the chart” is an execution claim, not a conversational flourish.
+
+For a larger canvas, maintain stable component identities. Position in an array is a fragile identifier when another component can be inserted or removed.
+
+## Separate draft, preview, and publication
+
+An intermediate artifact may be malformed, misleading, or incomplete. That is acceptable during construction, provided the application does not present it as an approved final result.
+
+Use distinct lifecycle states. A candidate becomes a preview after validation. Publication creates a deliberate, identifiable revision with the required checks and, where appropriate, human approval.
+
+Exports should identify the published revision and the data snapshot or observation time behind it. A report downloaded yesterday should not become impossible to explain because its live source changed today.
+
+Keep validation failures useful. “Invalid artifact” gives the model little to repair. “The requested y-axis field is textual; the available numeric fields are completed_count and delayed_count” is actionable, provided those field names are safe to reveal.
+
+Bound repair attempts. An agent that repeatedly regenerates a broken canvas can spend substantial tokens without making progress. A repair budget and an escalation path are product features.
+
+## Sometimes arbitrary HTML is the right tool
+
+A constrained component catalog cannot express everything. There are legitimate uses for custom HTML previews or isolated executable artifacts.
+
+Treat that as a different risk tier, not an escape hatch hidden inside the safe schema. Untrusted HTML needs an isolated rendering environment, a carefully designed iframe sandbox, content restrictions, and a narrow communication interface. MDN documents that sandbox tokens alter specific capabilities; combining permissions carelessly can undermine the intended isolation.[2]
+
+Do not inject generated markup directly into the authenticated application's DOM. Do not give a generated page ambient access to credentials, internal APIs, or arbitrary parent-window operations.
+
+If the parent and artifact exchange messages, validate the message type, shape, current artifact identity, revision, sender, and allowed action. For known origins, use an exact target origin and verify the received origin and source. An opaque-origin sandbox requires a different channel design; a nonce is useful for routing but does not turn an untrusted child into a trusted principal. MDN's `postMessage` documentation explains the origin and source checks.[3]
+
+Rendering isolation also does not solve phishing inside the preview. Make the artifact boundary visible, and keep sensitive account actions in trusted application UI.
+
+## Portability comes from a stable contract and honest capability tests
+
+Different models have different strengths in structured output, spatial reasoning, tool use, and repair. A shared artifact schema makes their outputs comparable. It does not erase those differences.
+
+Test the full loop: request, validation, repair, render feedback, revision, and publication. Include sparse data, conflicting units, long labels, missing fields, inaccessible datasets, and concurrent edits.
+
+The useful metric is not the proportion of responses that parse as JSON. It is the proportion of tasks that produce a correct, inspectable artifact within the allowed time and repair budget.
+
+The frontend contract gives you somewhere to put the knowledge the model should not have to rediscover: how units work, which components exist, how access is checked, and what a successful update means.
+
+That is the point of the architecture. Let the model help decide what to show. Keep the meaning, authority, and lifecycle of the thing being shown inside the application.
+
+### Technical notes
+
+[1] Pydantic, [Models](https://docs.pydantic.dev/latest/concepts/models/). Structural validation is not a substitute for semantic validation or resource authorization.
+
+[2] MDN, [The iframe element](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/iframe). Review sandbox and origin behavior against the actual embedding configuration.
+
+[3] MDN, [Window.postMessage](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage). The message-contract recommendations above are application design guidance, not an assertion that a single browser option makes generated content safe.
+
+
+## Continue reading
+
+[Human-in-the-Loop AI: An Approval Button Is Not an Authorization System](/blog/human-in-the-loop-ai-approval-authorization/)

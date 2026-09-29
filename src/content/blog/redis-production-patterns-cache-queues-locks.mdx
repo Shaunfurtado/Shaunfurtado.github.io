@@ -1,0 +1,156 @@
+---
+title: 'Redis in Production: Stop Calling Everything a Cache'
+description: 'Choose Redis patterns by failure semantics: caches, queues, Pub/Sub,
+  Streams, leases, eviction, and persistence each need a different recovery contract.'
+pubDate: '2026-11-10'
+tags:
+- redis
+- distributed-systems
+- backend-development
+- infrastructure
+- software-architecture
+author: Shaun Furtado
+draft: false
+canonicalURL: https://shaunfurtado.is-a.dev/blog/redis-production-patterns-cache-queues-locks/
+heroImage: /blog-assets/covers/06-redis-production-patterns-cache-queues-locks.png
+heroImageAlt: 'Not everything is a cache — Redis in Production: Stop Calling Everything
+  a Cache; an editorial diagram cover by Shaun Furtado.'
+seoTitle: 'Redis Production Patterns: Caches, Queues, and Leases'
+series: Systems in Practice
+articleId: 6
+---
+import ArticleDiagram from '/src/components/ArticleDiagram.astro';
+
+
+The easiest way to make Redis confusing is to call everything stored in it a cache.
+
+A cached search result can disappear and be rebuilt. A queued job represents work somebody expects to happen. A presence indicator can tolerate a brief mistake. An approval record may authorize a consequential action. These objects do not have the same failure semantics just because they fit into a key-value store.
+
+Before choosing a Redis data structure, I ask what losing, duplicating, delaying, or reading an old value would mean to the application.
+
+That question is more useful than “Is Redis fast enough?”
+
+## Give each category a failure contract
+
+For a disposable cache, the contract might be: a miss triggers recomputation, a stale value is acceptable for a short interval, and loss does not destroy user intent.
+
+For coordination state, the contract might be: a lease has a bounded lifetime, ownership can be lost, and stale owners must be rejected at the write boundary.
+
+For queued work, the contract might be: every accepted task has a durable application record, processing can be repeated, and completion is recorded independently of notification delivery.
+
+These distinctions should influence memory policies, persistence, permissions, monitoring, and recovery procedures. They may justify separate Redis instances or deployments. Separate logical databases alone do not give independent memory budgets, failure domains, or security boundaries.
+
+**Redis becomes a risky architecture when its speed is used to avoid deciding what the data means.**
+
+## Cache keys are part of the authorization design
+
+Consider caching a generated report summary by document identifier alone.
+
+That seems reasonable until different users have different access to the document, different redaction policies, or different versions. A correct cache hit can become an incorrect disclosure.
+
+A key should represent the identity of the result: tenant or access scope where needed, resource version, transformation version, and parameters that change the output. Do not blindly include raw secrets or personal information in key names; keys can appear in logs and monitoring.
+
+A hash of a low-entropy identifier is not necessarily anonymization. A cache key design is also a data-handling decision.
+
+For shared results, establish that sharing is allowed before optimizing for cross-user reuse. When authorization changes, know whether the cached value remains safe or needs invalidation. A time-to-live is not always an adequate revocation strategy.
+
+## Cache-aside has a stampede problem
+
+In a common cache-aside flow, the application reads a key, computes on a miss, and writes the result. When a popular key expires, many requests can all perform the same expensive computation.
+
+A per-key single-flight mechanism can reduce duplication. Add jitter to expiry times so many keys do not become cold simultaneously. For some read paths, serving a stale value while one worker refreshes it can be a good product trade-off.
+
+But stale-while-revalidate is not universally appropriate. A stale help article is different from a stale permission decision. The value should carry a freshness timestamp or version when the user needs to understand its age.
+
+Also bound negative caching. Caching “not found” can reduce repeated misses, but it can conceal a newly created resource for the duration of the negative entry. A failed upstream request should not automatically become a long-lived “this does not exist” result.
+
+## Pub/Sub is a notification channel, not a recovery log
+
+Redis documents Pub/Sub as at-most-once delivery: a disconnected or failing subscriber can miss a message without later replay.[1]
+
+That can be entirely appropriate for a “something changed” hint when the client can fetch current state. It is a poor sole record for a job completion, an approval, or an event every consumer must eventually process.
+
+For a live interface, I like separating the two responsibilities. Durable application state answers “What is true now?” A Pub/Sub notification tells connected clients “You may want to refresh.” A reconnect triggers a fresh snapshot or a resumable event read.
+
+The same principle prevents a common bug: a task finishes while the user's connection is down, and the interface remains stuck forever because the only completion message was ephemeral.
+
+## Streams provide different mechanics, not magical guarantees
+
+Redis Streams consumer groups track delivered-but-unacknowledged entries. Consumers can acknowledge processed entries, and pending work can be inspected and reassigned.[2][3]
+
+That supports a recovery-oriented processing model, but the application still decides when an effect is safely complete. A worker can perform a write and crash before acknowledging. Another worker may then see the entry again.
+
+Make the effect idempotent or reconcile it. Do not describe acknowledgment as creating exactly-once business behavior.
+
+Consumer groups also change routing semantics. Consumers in the same group divide work. Separate groups can independently process the same stream. A group shared accidentally between a notification service and an audit processor can make each see only part of the events it expected.
+
+Retention and trimming deserve explicit review. A recovery plan that assumes old events exist is invalid when those events have already been removed. Pending entries are operational metadata, not a substitute for retaining the content and application state required to recover.
+
+<ArticleDiagram stem="06-redis-production-patterns-cache-queues-locks" alt="Redis roles separated by semantics: disposable cache, transient notifications, recoverable stream processing, and bounded coordination." />
+
+## A lease is not a force field
+
+A Redis lease can help coordinate which worker should act. It cannot stop an old worker from continuing after a pause unless the resource being modified checks current ownership.
+
+Use a unique owner token and an atomic compare-and-delete operation when releasing a lease; otherwise, an old owner can delete a lease acquired by someone else. Redis's distributed-lock documentation discusses the importance of ownership values and bounded validity.[4]
+
+For correctness-sensitive writes, also consider fencing: the protected resource rejects an operation from an older ownership generation. The generation must be allocated through a mechanism whose failure semantics satisfy the application. A counter that can roll back during failover is not automatically a sufficient fencing authority.
+
+There are workloads where occasional overlapping work is merely inefficient, and a best-effort lease is acceptable. There are others where overlap can corrupt state. The cost of the coordination mechanism should follow that distinction.
+
+This is why I avoid saying “Redis locks solve concurrency.” They solve a specific coordination problem under specific assumptions.
+
+## Memory policy can contradict the workload
+
+Redis offers eviction policies for handling configured memory limits.[5] The right policy depends on whether keys are disposable.
+
+An application cache can often evict and recompute. A queue-backed workload may not tolerate losing arbitrary queue or job keys. A `noeviction` policy avoids silent eviction but means memory pressure can turn writes into errors; those errors still need an application response and an operational alert.
+
+Separate workloads when their memory semantics conflict. Track key growth, memory usage, eviction counts where applicable, rejected operations, and the oldest unprocessed work. A healthy latency graph can coexist with unbounded retention growth.
+
+Do not rely on one vague “Redis is up” check. A reachable server can still be unsuitable for accepting new work.
+
+## Persistence is a recovery choice
+
+Redis supports snapshot and append-only persistence strategies, with different performance and recovery trade-offs.[6]
+
+Choose based on an explicit recovery point objective: how much recent state can the application afford to lose? Then test restoration. A persistence setting in configuration is weaker evidence than a successful recovery drill.
+
+For important user tasks, a separate durable task ledger can reduce dependence on queue metadata surviving perfectly. The queue becomes an execution mechanism that can be reconciled from accepted intent. That does not remove the need to operate Redis well; it makes the application's recovery story less brittle.
+
+Replication, persistence, and backups solve related but different problems. A replica is not automatically protection against an accidental deletion propagated to it. A backup that nobody has restored is an assumption with a file attached.
+
+## Keep the production boundary narrow
+
+Use network isolation, authenticated access, least-privilege command and key permissions where supported, and appropriate transport protection. Avoid public exposure. Do not let browsers or generated code connect directly to the coordination store.
+
+Bound client connection counts and configure timeouts for the operation being performed. A short timeout suitable for a cache read may be inappropriate for a blocking stream or queue operation. Retry policies should not amplify an already overloaded server.
+
+Keep slow, expensive administrative operations away from latency-sensitive paths. The precise command behavior depends on Redis version and dataset shape, so measure with the production-like workload rather than relying on the general claim that an in-memory database must be fast.
+
+## The review I would do before launch
+
+Take each Redis-backed feature and write one sentence for what happens when the key disappears, the value is stale, the client disconnects, and the operation executes twice.
+
+When the answer is “that cannot happen,” inspect the assumption. When the answer is “the user loses their request,” add a durable intent path. When the answer is “we refresh the snapshot,” an ephemeral notification channel may be exactly right.
+
+Good Redis architecture is not about avoiding important work. It is about matching each use to a failure contract you can actually defend.
+
+## Technical notes
+
+[1] [Redis Pub/Sub delivery semantics](https://redis.io/docs/latest/develop/pubsub/).
+
+[2] [Redis XREADGROUP](https://redis.io/docs/latest/commands/xreadgroup/).
+
+[3] [Redis XACK](https://redis.io/docs/latest/commands/xack/).
+
+[4] [Redis distributed-lock guidance](https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/).
+
+[5] [Redis key eviction](https://redis.io/docs/latest/develop/reference/eviction/).
+
+[6] [Redis persistence](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/).
+
+
+## Continue reading
+
+[Python RQ in Production: Simple Queues, Explicit Guarantees](/blog/python-rq-production-scaling-patterns/) · [Deterministic Infrastructure for AI Agents: Make Every Action Accountable](/blog/architecting-deterministic-infrastructure/)

@@ -1,6 +1,7 @@
 ---
 import '../../styles/global.css';
 import { CollectionEntry, getCollection, render } from 'astro:content';
+import ThemeSwitch from '../../components/ThemeSwitch.astro';
 
 type Props = {
   post: CollectionEntry<'blog'>;
@@ -8,8 +9,9 @@ type Props = {
 
 export async function getStaticPaths() {
   const posts = await getCollection('blog');
+  const now = Date.now();
   return posts
-    .filter((post) => !post.data.draft)
+    .filter((post) => !post.data.draft && (!post.data.publishAt || post.data.publishAt.getTime() <= now))
     .map((post) => ({
       params: { slug: post.id },
       props: { post },
@@ -17,7 +19,8 @@ export async function getStaticPaths() {
 }
 
 const { post } = Astro.props as Props;
-const { Content } = await render(post);
+const { Content, headings } = await render(post);
+const sections = headings.filter((heading) => heading.depth === 2);
 
 const formatDate = (value: Date) =>
   value.toLocaleDateString('en-GB', {
@@ -59,21 +62,74 @@ const formatDate = (value: Date) =>
     </script>
   </head>
   <body class="app-shell antialiased">
-    <main class="max-w-4xl mx-auto px-6 py-16 space-y-6">
-      <p class="kicker">
-        {formatDate(post.data.pubDate)}
-      </p>
-      <h1 class="text-4xl md:text-5xl font-black leading-tight max-w-3xl" style="letter-spacing: 0; color: var(--ink);">
-        {post.data.title}
-      </h1>
-      <article class="blog-post prose max-w-none prose-headings:font-medium prose-a:no-underline hover:prose-a:underline" style="--tw-prose-body: var(--ink-soft); --tw-prose-bold: var(--ink); --tw-prose-code: var(--ink); --tw-prose-quotes: var(--ink); --tw-prose-counters: var(--muted); --tw-prose-bullets: var(--muted); --tw-prose-hr: var(--surface);">
-        <Content />
-      </article>
-      <p>
-        <a href="/blog/" class="mono-link hover-line">
-          -> Back to blog
-        </a>
-      </p>
+    <main class="article-shell">
+      <header class="blog-topbar">
+        <ThemeSwitch />
+        <a href="/blog/" class="mono-link hover-line">← All writing</a>
+      </header>
+      <div class="article-heading">
+        <p class="kicker">{formatDate(post.data.pubDate)}</p>
+        <h1>{post.data.title}</h1>
+        <p class="essay-copy">{post.data.description}</p>
+      </div>
+      {sections.length > 0 && (
+        <details class="article-sections-mobile">
+          <summary>In this article <span id="current-section">{sections[0].text}</span></summary>
+          <nav aria-label="Article sections">
+            {sections.map((section) => <a href={`#${section.slug}`}>{section.text}</a>)}
+          </nav>
+        </details>
+      )}
+      <div class="article-grid">
+        <article id="article-body" class="blog-post prose max-w-none prose-headings:font-medium prose-a:no-underline hover:prose-a:underline" style="--tw-prose-body: var(--ink-soft); --tw-prose-bold: var(--ink); --tw-prose-code: var(--ink); --tw-prose-quotes: var(--ink); --tw-prose-counters: var(--muted); --tw-prose-bullets: var(--muted); --tw-prose-hr: var(--surface);">
+          <Content />
+        </article>
+        {sections.length > 0 && (
+          <aside class="article-sections-side">
+            <nav aria-label="Article sections">
+              <p class="kicker">[ In this article ]</p>
+              {sections.map((section) => <a href={`#${section.slug}`}>{section.text}</a>)}
+            </nav>
+          </aside>
+        )}
+      </div>
+      <p class="article-return"><a href="/blog/" class="mono-link hover-line">← Back to writing</a></p>
     </main>
+    <script>
+      const headingElements = Array.from(document.querySelectorAll<HTMLElement>('#article-body h2[id]'));
+      const sectionLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>('.article-sections-side a, .article-sections-mobile a'));
+      const currentSection = document.getElementById('current-section');
+      const mobileSections = document.querySelector<HTMLDetailsElement>('.article-sections-mobile');
+      let scrollQueued = false;
+
+      function updateCurrentSection() {
+        scrollQueued = false;
+        if (!headingElements.length) return;
+        const threshold = Math.min(180, window.innerHeight * 0.3);
+        let active = headingElements[0];
+        for (const heading of headingElements) {
+          if (heading.getBoundingClientRect().top <= threshold) active = heading;
+          else break;
+        }
+        for (const link of sectionLinks) {
+          if (link.hash === `#${active.id}`) link.setAttribute('aria-current', 'location');
+          else link.removeAttribute('aria-current');
+        }
+        if (currentSection) currentSection.textContent = active.textContent || '';
+      }
+
+      window.addEventListener('scroll', () => {
+        if (!scrollQueued) {
+          scrollQueued = true;
+          requestAnimationFrame(updateCurrentSection);
+        }
+      }, { passive: true });
+      window.addEventListener('resize', updateCurrentSection);
+      sectionLinks.forEach((link) => link.addEventListener('click', () => {
+        if (mobileSections) mobileSections.open = false;
+        requestAnimationFrame(updateCurrentSection);
+      }));
+      updateCurrentSection();
+    </script>
   </body>
 </html>

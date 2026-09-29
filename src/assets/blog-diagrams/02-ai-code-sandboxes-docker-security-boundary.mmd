@@ -1,0 +1,13 @@
+flowchart TB
+    request["Authorized execution<br/>request"]
+    broker["Sandbox broker<br/>admission + limits"]
+    runtime["Isolated runtime<br/>restricted filesystem"]
+    network["Controlled egress<br/>allow / deny policy"]
+    collect["Bounded artifact<br/>collection"]
+    cleanup["Verify cleanup<br/>or quarantine"]
+    request --> broker
+    broker -->|"lease"| runtime
+    runtime -->|"network attempts"| network
+    runtime -->|"outputs"| collect
+    collect -->|"always finalize"| cleanup
+    broker -.->|"cancel / expiry"| cleanup

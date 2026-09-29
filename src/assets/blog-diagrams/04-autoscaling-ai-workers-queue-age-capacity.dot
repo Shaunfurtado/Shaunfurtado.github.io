@@ -1,0 +1,19 @@
+digraph design {
+graph [rankdir=TB, bgcolor="#f6f4ee", pad="0.32", nodesep="0.42", ranksep="0.55", splines=polyline, fontname="DejaVu Sans", fontsize=18];
+node [shape=box, style="rounded,filled", fillcolor="#ffffff", color="#b9c8c4", penwidth=1.3, fontname="DejaVu Sans", fontsize=17, margin="0.20,0.16"];
+edge [color="#58736e", fontname="DejaVu Sans", fontsize=12, arrowsize=0.7, penwidth=1.4];
+work [label="Incoming work\nclass + deadline",fillcolor="#16352f",fontcolor="#ffffff",color="#16352f"];
+admit [label="Admission\ntenant + global limits"];
+place [label="Placement\nruntime headroom"];
+pools [label="Worker and runtime\npools"];
+measure [label="Queue age + work\nquota + saturation"];
+scale [label="Scale out / drain\nwithin constraints"];
+work -> admit [label=""];
+admit -> place [label="accepted"];
+place -> pools [label="reserve slot"];
+pools -> measure [label="observations"];
+measure -> scale [label=""];
+scale -> pools [label="change capacity",style=dashed,constraint=false];
+{rank=same; work; admit; place;}
+{rank=same; measure; scale; pools;}
+}

@@ -1,0 +1,13 @@
+flowchart TB
+    model["Model proposes<br/>artifact specification"]
+    validate["Schema + permissions<br/>+ semantic checks"]
+    renderer["Trusted renderer<br/>approved components"]
+    preview["Versioned preview<br/>data + warnings"]
+    publish["Deliberate publication<br/>identified revision"]
+    feedback["Structured feedback<br/>for bounded repair"]
+    model --> validate
+    validate -->|"valid"| renderer
+    renderer --> preview
+    preview -->|"reviewed"| publish
+    preview --> feedback
+    feedback -.->|"repair current revision"| model

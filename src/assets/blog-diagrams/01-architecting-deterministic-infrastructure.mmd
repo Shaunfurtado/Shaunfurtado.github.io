@@ -1,0 +1,14 @@
+flowchart TB
+    intent["User intent"]
+    gate["Resolve authority<br/>and action version"]
+    owner["Claim execution<br/>with owner generation"]
+    effect["Bounded external<br/>action"]
+    record["Durable action<br/>and outcome record"]
+    recover["Unknown outcome:<br/>reconcile, do not guess"]
+    intent --> gate
+    gate -->|"approved"| owner
+    owner --> effect
+    gate -->|"proposal"| record
+    effect -->|"receipt / uncertainty"| record
+    record -->|"ambiguous"| recover
+    recover -.->|"only if safe"| owner

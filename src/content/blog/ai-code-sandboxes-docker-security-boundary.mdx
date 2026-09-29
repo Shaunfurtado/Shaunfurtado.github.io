@@ -1,0 +1,168 @@
+---
+title: 'AI Code Sandboxes: Docker Is a Starting Point, Not a Complete Security Story'
+description: Design AI code sandboxes around untrusted execution, network policy,
+  resource limits, cleanup, and isolation—not just a container that starts successfully.
+pubDate: '2026-11-03'
+tags:
+- ai-agents
+- docker
+- security
+- infrastructure
+- software-architecture
+author: Shaun Furtado
+draft: false
+canonicalURL: https://shaunfurtado.is-a.dev/blog/ai-code-sandboxes-docker-security-boundary/
+heroImage: /blog-assets/covers/02-ai-code-sandboxes-docker-security-boundary.png
+heroImageAlt: 'Docker is the starting point — AI Code Sandboxes: Docker Is a Starting
+  Point, Not a Complete Security Story; an editorial diagram cover by Shaun Furtado.'
+seoTitle: AI Code Sandbox Security Beyond Docker
+series: Systems in Practice
+articleId: 2
+---
+import ArticleDiagram from '/src/components/ArticleDiagram.astro';
+
+
+A Python script does not become trustworthy because a helpful model wrote it.
+
+That sounds obvious until you look at the environment the script receives: the API container's environment variables, a writable project directory, network access, and whatever credentials happened to be mounted for an unrelated service.
+
+The script may only need to group a CSV by month. The environment has given it enough authority to do considerably more.
+
+For **AI code execution sandboxes**, the central question is not “Can this code run?” It is “What remains protected when this code behaves badly?”
+
+## Begin with the hostile version of an ordinary task
+
+Take a mundane request: inspect an uploaded spreadsheet, calculate totals, and generate a chart.
+
+The happy path needs a bounded input file, a Python runtime, some installed libraries, temporary storage, and a way to return outputs. It does not need the production database, another user's files, browser cookies, cloud credentials, or unrestricted internet access.
+
+Now consider failures that do not require an especially sophisticated attacker. The code can loop forever. A dependency can allocate too much memory. An archive can expand far beyond its compressed size. A plotting routine can produce thousands of files. A network request can stall. A generated path can point outside the intended workspace.
+
+Those are enough reasons to separate the execution environment before discussing exotic escape techniques.
+
+My preferred design begins with a broker. The application submits a typed job describing approved inputs, limits, and expected output categories. The broker creates or assigns a runtime, materializes the inputs, executes the task, and returns a manifest of candidate artifacts.
+
+The model should not choose arbitrary host mounts or decide which security runtime is “good enough” today.
+
+## A container is a mechanism, not a completed threat model
+
+Docker's namespaces, cgroups, and related controls are useful building blocks. Docker's own security guidance also makes clear that the daemon and its control interface require careful protection.[1]
+
+The configuration matters as much as the word “container.” A privileged container with broad host mounts and daemon access is a very different boundary from an unprivileged container with a read-only root filesystem and a tightly controlled working directory.
+
+For higher-risk untrusted workloads, a sandboxed runtime such as gVisor adds a different isolation layer. That does not mean every system call, workload, or performance characteristic behaves exactly as it would in a conventional container.[2] A microVM is another design option, with different operational costs.
+
+**“We run it in Docker” is an implementation detail. It is not a sufficient answer to “What can the generated code reach?”**
+
+Choose the boundary against the threat model, test the required workloads, and fail closed when the required isolation is unavailable. A production system should not silently downgrade to host execution to preserve the illusion of availability.
+
+## Split authorization from runtime configuration
+
+A useful job request might look like this:
+
+```json
+{
+  "input_handles": ["upload_32"],
+  "runtime_profile": "python-analysis",
+  "network_profile": "disabled",
+  "limits": {
+    "wall_seconds": 45,
+    "memory_mib": 768,
+    "cpu_cores": 1,
+    "output_bytes": 12000000,
+    "output_files": 12
+  },
+  "allowed_outputs": ["text/csv", "image/png"]
+}
+```
+
+These values are illustrative, not recommended defaults. A numerical workload and an image-processing workload need different measured envelopes.
+
+The service must resolve `upload_32` under the authenticated user's scope. It must not treat knowledge of the handle as permission. The runtime profile must be selected from a server-owned catalog, not interpreted as an arbitrary image name supplied by the model.
+
+The network profile should map to enforced routing and firewall behavior. A boolean in a job record does not disable a network interface.
+
+I also prefer separating the user-visible timeout from the runtime's hard termination deadline. The interface can report a slow task and offer cancellation before the system reaches its final kill threshold. That distinction improves both resource control and user experience.
+
+## Treat the lifecycle as a resource contract
+
+A sandbox has more states than running and stopped.
+
+<ArticleDiagram stem="02-ai-code-sandboxes-docker-security-boundary" alt="Sandbox lifecycle from admission through isolated execution, output quarantine, promotion, and cleanup." />
+
+Admission checks whether the system can safely accept the task. Materialization copies only approved inputs. Execution applies limits. Collection brings candidate outputs into quarantine. Validation decides what can be promoted. Cleanup removes or resets the execution environment.
+
+The cleanup stage is not housekeeping to add later. It is part of the isolation boundary.
+
+A warm runtime can save startup time, but reusing it requires confidence that filesystem state, processes, memory-bearing services, temporary credentials, and tenant-specific data have been reset. A clean-looking working directory is not proof of a clean runtime.
+
+For a first implementation, destroying a per-task environment may be easier to reason about than aggressive pooling. Pool only after measuring that cold starts are an important part of the user-visible latency, and after defining a reset procedure that you can test.
+
+## Network denial needs an exception path
+
+Some tasks genuinely need network access. Installing a package dynamically, retrieving a public dataset, or calling an approved API can be legitimate.
+
+The mistake is converting that need into “allow everything.”
+
+I would separate dependency preparation from task execution where practical. Curated runtime images can contain commonly used libraries. An input-fetching service can retrieve approved resources and materialize them as files. A narrowly scoped egress profile can be issued for the exceptional task that cannot work offline.
+
+An allowlisted hostname is only part of that policy. Redirects, DNS resolution, private address ranges, alternate protocols, and internal metadata services need consideration at the actual network boundary. Application-level URL validation alone is not a complete egress control.
+
+There is also a product decision hiding here: a task that requires a new dependency may have to wait for an image update or use a different path. That can be a better outcome than granting arbitrary package installation and credentials to every code run.
+
+## The output directory is another untrusted input
+
+It is easy to focus on the code and trust whatever file it leaves behind.
+
+Do not.
+
+A generated file can have a misleading extension, enormous dimensions, unexpected embedded content, or a name designed to confuse a download path. Archive members can contain absolute paths, parent traversal, symlinks, or collisions. A file can also simply be the wrong result.
+
+The collector should walk an allowed output root using filesystem-safe operations, reject unsupported object types, impose byte and count limits, and avoid following untrusted links. Path normalization is useful but is not, on its own, a defense against races in a live filesystem.
+
+For archive import, validation must happen before extraction into any trusted location. For exports, a manifest should record the actual media type, size, digest, and producing attempt. Malware scanning and content sanitization can be additional controls; neither should be described as proving a file harmless.
+
+Correctness validation is separate again. A syntactically valid CSV may contain totals that do not match the input. A successfully rendered chart may use the wrong axis. The task contract should describe what makes an output useful, not merely downloadable.
+
+## Cancellation should travel outside the model loop
+
+A stop request cannot depend on the model choosing to call a cancellation tool.
+
+The control path should reach the broker directly. The broker can stop new execution, send a graceful termination request, wait for a bounded interval, and force termination when necessary. It must also reclaim associated resources and prevent a late completion from overwriting the cancelled state.
+
+Already-produced artifacts need a policy: retain them as partial outputs, discard them, or expose them only after an explicit review. The right answer depends on the task. What matters is that the interface does not quietly label a partial report complete.
+
+The same mechanism should handle wall-clock expiry. Cancellation and timeout can share termination machinery while retaining different reasons in the event record.
+
+## Size capacity by the thing that actually runs out
+
+CPU percentage is not always the limiting factor. A workload can spend most of its time waiting for a library or an input while holding a large memory footprint. Another can use little memory but generate excessive output.
+
+Measure peak memory, CPU time, wall time, startup time, filesystem growth, and output volume separately. Keep reserves for the host and the broker. Enforce per-task ceilings even when aggregate capacity appears available.
+
+There is no universal safe concurrency count. A host with enough total memory on paper may still lack the available headroom for the next job. A static capacity estimate is an admission heuristic, not a live safety guarantee.
+
+Under pressure, queueing or rejecting work is better than creating a runtime that is likely to be killed halfway through a user's calculation.
+
+## A practical acceptance exercise
+
+Before adding more languages or larger runtimes, test the deliberately boring failures.
+
+Run a task that exceeds memory. Run one that ignores graceful termination. Attempt to read an input belonging to another principal. Produce a symlink in the output directory. Return a file larger than the artifact limit. Crash the broker while a runtime exists, then restart it and check orphan cleanup.
+
+Also test a valid, computationally expensive task. A sandbox that blocks everything is easy to secure and useless to operate.
+
+The aim is a bounded environment that completes the intended work, explains refusal, and leaves the rest of the system unaffected when a task fails.
+
+That is the sandbox's job. The model's good intentions are not part of the boundary.
+
+## Technical notes
+
+[1] [Docker Engine security](https://docs.docker.com/engine/security/).
+
+[2] [gVisor documentation](https://gvisor.dev/docs/).
+
+
+## Continue reading
+
+[Deterministic Infrastructure for AI Agents: Make Every Action Accountable](/blog/architecting-deterministic-infrastructure/)

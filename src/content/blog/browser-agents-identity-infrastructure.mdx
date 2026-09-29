@@ -1,0 +1,158 @@
+---
+title: Browser Agents Are Identity Infrastructure, Not Just Automation
+description: Build safer browser agents with scoped sessions, explicit ownership,
+  human handoff, evidence versions, and recovery that does not casually reuse identity.
+pubDate: '2026-11-17'
+tags:
+- ai-agents
+- browser-automation
+- security
+- playwright
+- software-architecture
+author: Shaun Furtado
+draft: false
+canonicalURL: https://shaunfurtado.is-a.dev/blog/browser-agents-identity-infrastructure/
+heroImage: /blog-assets/covers/03-browser-agents-identity-infrastructure.png
+heroImageAlt: A browser session carries authority — Browser Agents Are Identity Infrastructure,
+  Not Just Automation; an editorial diagram cover by Shaun Furtado.
+seoTitle: 'Browser Agent Architecture: Identity and Isolation'
+series: Systems in Practice
+articleId: 3
+---
+import ArticleDiagram from '/src/components/ArticleDiagram.astro';
+
+
+A browser tab looks like a small resource. An authenticated browser session is closer to a portable identity.
+
+It can contain cookies, storage, active connections, and access to actions that the surrounding application does not expose through its own API. Give an agent that session and the security question is no longer just which page it can read. It is which account it can act as, who owns control, and what happens when the page changes underneath it.
+
+That is why I treat **browser agents** as an execution system, not as a thin wrapper around `click()`.
+
+## Start by separating three things that look alike
+
+A browser process is a runtime. A browser context is a partition of browsing state. An authenticated identity is the authority associated with an account.
+
+They should not be interchangeable identifiers in application code.
+
+Playwright documents browser contexts as isolated environments for state such as cookies and storage.[1] That is useful for application and test isolation. It should not be confused with a hostile-code security boundary or a complete multi-tenant design.
+
+Playwright also warns that saved authentication state can contain sensitive cookies and headers capable of impersonating an account.[2] A profile file is not harmless test data once it belongs to a real user.
+
+I would keep separate records for the runtime instance, the session, the principal permitted to use it, and the identity selected for the task. Resolving “the current browser” through whichever tab happens to be open is too vague for a consequential workflow.
+
+## Make session acquisition an authorized operation
+
+Suppose a user asks an agent to retrieve an invoice from a supplier portal.
+
+The application should resolve the permitted account before launching automation. It should check whether that identity is already in use, whether the task permits authenticated browsing, and whether a human intervention is required. The model can ask for the appropriate capability. It should not invent a profile path or select an account by filesystem convention.
+
+A session grant can bind the task, principal, identity, allowed destinations, expiry, and available action classes. The browser worker validates that grant and rechecks sensitive operations against current state.
+
+“Read-only” deserves care. Web pages can trigger effects during navigation, and a button labelled View may initiate a download, mark an item as read, or change server state. An action allowlist is useful, but the risk classification must account for the actual site behavior. There is no universal read-only browser mode that makes arbitrary authenticated websites side-effect-free.
+
+For particularly sensitive workflows, an API with a genuinely limited credential may be preferable to a full browser session.
+
+## Browser control needs an owner
+
+Two controllers can create one very confusing browser.
+
+An agent begins filling a form. The user opens the live viewer and changes a field. The agent, working from an older screenshot, clicks the submit button. Neither controller intended the final combination of inputs.
+
+This is not fixed by adding a larger screenshot to the prompt. The system needs an ownership protocol.
+
+<ArticleDiagram stem="03-browser-agents-identity-infrastructure" alt="Human and agent control pass through an ownership service; actions must match the current epoch and observation." />
+
+I prefer explicit modes such as agent-controlled, human-controlled, and paused. Each ownership change increments a control epoch. The worker accepts an agent action only when its epoch matches the current one. After human takeover, a delayed action from the previous epoch is stale, even when its session identifier is still valid.
+
+The ownership transition must be enforced where actions are dispatched. A disabled button in the viewer does not stop an old worker.
+
+A new epoch is also a natural point to invalidate the previous observation. The agent should obtain a fresh view after control returns instead of continuing from a page state that may no longer exist.
+
+## Observations are versioned evidence
+
+A screenshot tells the model what the page looked like. It does not guarantee that the page still looks that way.
+
+For a concrete action, I want the request to identify the observation it relied on. The browser worker can reject actions based on expired or incompatible observations and require a refresh.
+
+A simplified protocol might carry:
+
+```json
+{
+  "session": "session_18",
+  "control_epoch": 7,
+  "observation": "observation_44",
+  "action": {
+    "kind": "activate",
+    "target_ref": "node_12"
+  }
+}
+```
+
+These references are scoped to the session and observation. They are not permissions by themselves. A target reference should not be interpreted as a permanent selector that remains trustworthy after navigation.
+
+For low-risk actions, refreshing on every small page mutation may be excessive. For submission, account changes, or a financial operation, stronger state verification is justified. The system needs a risk-sensitive rule rather than a blanket assumption that every click is equivalent.
+
+## Give the model an observation, not the entire browser
+
+A raw page can be noisy, large, and sensitive. A useful observation is a bounded projection: relevant visible text, accessible roles, target references, page identity, retrieval time, and evidence handles where appropriate.
+
+Credential fields and secret-bearing storage should stay outside that projection. A name-based redaction rule can help, but it is not enough to classify all sensitive content. Password fields, one-time codes, personal information, hidden state, and free text require context-sensitive handling.
+
+Fetched page content is also untrusted input. It can contain instructions addressed to the agent. Labelling that content as source material helps preserve the intended hierarchy, but the real defense is that page text cannot grant tool permissions or alter the execution policy.
+
+**A web page is allowed to describe what it wants. It is not allowed to appoint itself your agent's system administrator.**
+
+That distinction should remain true even when the model misinterprets the page.
+
+## Authentication should have a human path
+
+Some workflows encounter a login screen, a one-time code, an account-selection prompt, or a challenge that should be completed by the user.
+
+I would make that an explicit blocked state, with a reason and a resumable handoff. The browser remains bound to the original principal. The human takes control through an authenticated viewer. The agent resumes only after the control epoch changes and the worker obtains a fresh observation.
+
+Avoid routing passwords through chat just because the model can type them. A dedicated credential flow or direct human entry keeps secrets out of the model transcript and reduces accidental retention.
+
+The viewer itself needs short-lived authorization, a bounded lifetime, and isolation from other sessions. A hard-to-guess viewer URL is not a substitute for access control.
+
+## Reliability is more than selector repair
+
+Browser automation tends to attract clever recovery logic: try another selector, search for a similar label, click the nearest element, or ask the model to infer what changed.
+
+Some of that is useful. The limit is the consequence of choosing incorrectly.
+
+A failed read can often be retried after navigation. A failed submit is different. The click may have reached the server even though the page timed out. Repeating it blindly can duplicate an action.
+
+The browser workflow therefore needs operation-specific outcome checks. Did a new receipt appear? Does the remote record show the intended state? Is there a transaction reference? When the outcome cannot be established, the correct response may be to pause for reconciliation rather than keep clicking.
+
+“Self-healing” is an unfortunate name when the repair mechanism silently changes the meaning of the user's action.
+
+## Pool capacity is not a tab count
+
+A browser can hold expensive pages, video, large documents, and multiple child processes. Idle authenticated sessions also consume resources and extend the lifetime of sensitive state.
+
+I would measure startup time, session memory, active action latency, idle duration, and failures during acquisition. Keep a separate cap on active sessions and on concurrent operations. A worker count is not necessarily a session count.
+
+Warm pools help only when their reuse policy is safe. Persistent profiles should be bound to the correct identity; ephemeral sessions should be reset or destroyed. Under resource pressure, a queued request with an honest status is preferable to launching a browser that is likely to fail after the user logs in.
+
+A sweeper should reconcile runtime instances against durable session ownership. A control-service restart must not leave forgotten authenticated browsers running indefinitely.
+
+## Test the handoffs, not just the clicks
+
+A meaningful acceptance suite includes a human takeover during a pending action, an expired grant, an observation invalidated by navigation, and two requests attempting to acquire the same identity.
+
+It should also cover a worker crash after a submit, a viewer opened by the wrong principal, a session that exceeds its idle lifetime, and sensitive values excluded from the model-facing observation.
+
+These are the points where a browser changes from a tool into a product responsibility.
+
+The best browser agent is not the one that clicks most confidently. It is the one whose authority, observations, and handoffs remain understandable when confidence is misplaced.
+
+## Technical notes
+
+[1] [Playwright: browser-context isolation](https://playwright.dev/docs/browser-contexts).
+
+[2] [Playwright: authentication-state security](https://playwright.dev/docs/auth).
+
+
+## Continue reading
+
+[Deterministic Infrastructure for AI Agents: Make Every Action Accountable](/blog/architecting-deterministic-infrastructure/) · [AI Code Sandboxes: Docker Is a Starting Point, Not a Complete Security Story](/blog/ai-code-sandboxes-docker-security-boundary/)
