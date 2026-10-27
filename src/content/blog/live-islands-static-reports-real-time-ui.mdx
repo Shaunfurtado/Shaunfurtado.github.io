@@ -1,8 +1,6 @@
 ---
-title: 'Live Islands in Static Reports: Real-Time UI Without Rewriting the Document'
-description: Add live islands to static reports with shared subscriptions, scoped
-  data access, versioned updates, stale-state UX, and exports that preserve observation
-  times.
+title: Live Prices Inside an AI-Written Answer
+description: How Ananta turns a closed token in the agent's markdown into a live price chip — surviving the sanitiser, sharing one WebSocket per chat, falling back to an as-of snapshot — plus the bugs a real browser test found.
 pubDate: '2026-12-29'
 tags:
 - frontend-development
@@ -13,157 +11,93 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/live-islands-static-reports-real-time-ui/
-heroImage: /blog-assets/covers/14-live-islands-static-reports-real-time-ui.png
-heroImageAlt: 'Static narrative. Live observations. — Live Islands in Static Reports:
-  Real-Time UI Without Rewriting the Document; an editorial diagram cover by Shaun
-  Furtado.'
-seoTitle: 'Live Islands in Static Reports: Real-Time UI Design'
+seoTitle: 'Live Islands in AI Answers: Tokens, Shared Sockets, and Snapshots'
 series: Systems in Practice
 articleId: 14
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
+An agent answer about markets goes stale almost immediately. "Infosys is at 1,512, up 0.8%" is true when it's written and quietly wrong five minutes later, while the user is still reading the paragraph and deciding what to do.
 
-A report says, “There are twelve delayed deliveries.” Beside the sentence, a live counter now says fourteen.
+We didn't want to re-run the agent to refresh a number, and we definitely didn't want the model streaming prices. So answers in Ananta can contain *live islands*: small chips inside otherwise static text that show the current price when one is available, and an honest snapshot when it isn't.
 
-Which one is wrong?
+## A closed token, not free text
 
-Possibly neither. The sentence describes the state when the report was written. The counter describes a more recent observation. The problem is that the interface has hidden the difference.
-
-This is the central design challenge of **live islands in static reports**. The subscription is the easy part. The harder part is giving changing data a clear relationship to a document that makes claims about a particular moment.
-
-## A document and a dashboard make different promises
-
-A dashboard is usually interpreted as a view of current state. A report is usually interpreted as a coherent authored account.
-
-Combining them can be useful: a stable incident review with current service status, a shipment summary with a live exception count, or a research note with a small panel of refreshed observations. But the live section must not silently rewrite the meaning of the static one.
-
-I would keep authored prose tied to its evidence snapshot and place live values in explicit components. The document says when its analysis was produced. Each live component says when its data was observed and whether updates are healthy.
-
-A timestamp belongs to a value, not merely to the page footer.
-
-## “Island” describes a boundary, not a freshness guarantee
-
-Astro's islands architecture describes selectively adding interactivity to otherwise static content.[1] That is a useful conceptual starting point, but a live data island needs additional contracts for identity, authorization, subscription ownership, and stale state.
-
-The page might be server-rendered, statically generated, or stored as an artifact in another application. The essential boundary is the same: most of the document remains ordinary content while a small trusted component handles a bounded interactive concern.
-
-This article uses “live island” in that application-design sense. It does not assume a particular frontend framework.
-
-The model should select from approved component types through structured data. It should not invent arbitrary HTML attributes that the application then interprets as permission to subscribe to whatever resource they name.
-
-## Give the component a stable data contract
-
-A minimal component request might look like this:
-
-```json
-{
-  "kind": "live_metric",
-  "metric_ref": "metric-example-8",
-  "label": "Delayed deliveries",
-  "display": "integer",
-  "snapshot": {
-    "value": 12,
-    "observed_at": "2026-10-06T08:00:00Z"
-  }
-}
-```
-
-The backend resolves `metric_ref` under the viewer's identity. The model cannot turn a reference into a new subscription scope by changing the label or inserting an endpoint.
-
-The trusted definition supplies units, permitted aggregation, freshness policy, and the authoritative source. The display component should not accept arbitrary formatting code from the model.
-
-Keep a snapshot even when the component is live. It supports initial rendering, offline export, and an intelligible fallback when the live service is unavailable. An old snapshot must be labelled as old; it should not inherit a green “live” badge just because the page loaded successfully.
-
-## Share the transport, not the authorization
-
-A document may show the same metric in a heading, a summary card, and a table. Opening three identical subscriptions wastes resources and complicates cleanup.
-
-A parent-level subscription registry can deduplicate them. Its key includes the authorized scope, resource, query parameters, and any aggregation or version that changes the meaning of the result. Mounted components acquire a subscription; unmounted components release it. The transport closes when the reference count reaches zero, possibly after a short bounded grace period to avoid reconnect churn.
-
-Do not deduplicate across users merely because a metric name matches. Reusing a transport or a cache must preserve the authorization boundary. A global registry that forgets tenant scope is a data-leak mechanism with a performance-oriented name.
-
-The parent can batch requests and coalesce updates. Rendering every intermediate value is not always useful; maintaining a bounded cadence can keep a page responsive. Preserve events that matter to the component's semantics, though. A latest-value counter and an audit log have different loss tolerances.
-
-<ArticleDiagram stem="14-live-islands-static-reports-real-time-ui" alt="Static narrative uses an authored snapshot while a shared, authorized subscription registry feeds clearly marked live components." />
-
-## Order updates by the source's version
-
-Messages can arrive late or out of order. A client that accepts whichever update arrives last can move backward.
-
-Use a server-defined monotonic sequence or a comparable resource version when the source provides one. Its ordering domain must be explicit: one resource, one stream generation, or one partition. A sequence that restarts after a reconnect needs a generation identifier or a fresh snapshot before incremental updates resume.
-
-A local receipt timestamp is not a substitute for an authoritative version. Neither is a client-generated sequence that merely describes arrival order.
-
-The component should have explicit states such as loading, current, stale, disconnected, and unavailable. “Disconnected” does not necessarily mean the last value is invalid. “Current” should mean the value satisfies a documented freshness condition, not simply that a socket exists.
-
-When authorization is revoked, clear or replace the sensitive live state according to the product's access policy. Continuing to display an old value may be unacceptable even when reconnecting is forbidden.
-
-## Reconnection needs a snapshot story
-
-A websocket reconnecting successfully does not prove that the client saw every update while disconnected.
-
-For a latest-value metric, fetching a fresh authorized snapshot may be enough. For a sequence of events, the server needs a supported cursor or replay mechanism, or the UI must declare the gap and reload the relevant view.
-
-Keep the recovery path bounded. A component that reconnects indefinitely without backoff can turn a service outage into a retry storm. A registry should coordinate retries across its subscribers rather than letting every card run its own loop.
-
-Also define what happens after tab suspension, browser sleep, document restoration, and a viewer switching accounts. Those transitions frequently break assumptions that look correct during a continuous development session.
-
-## An iframe is a separate application boundary
-
-Some documents render inside isolated frames. In that design, the trusted parent should usually own authenticated data access and deliver only authorized, bounded updates through a narrow channel.
-
-For known-origin frames, verify both the expected sender window and the exact origin. Validate every message against a schema and the current document instance. MDN documents the need to control target origins and inspect received message origins and sources.[2]
-
-Sandboxed frames can have opaque origins, which changes what origin checks can establish.[3] A random channel identifier can help distinguish document instances, but it is not authorization. Keep the parent's allowed message operations narrow, verify the sender window, and never let a child request arbitrary authenticated API calls.
-
-If delivery requires a wildcard target because the child has an opaque origin, minimize the data crossing the boundary and bind delivery to the intended current frame. Consider whether a dedicated-origin renderer gives a simpler security model for the sensitivity of the data involved.
-
-An isolated artifact should not be able to acquire powers by sending a convincing message to its parent. Treat its requests as untrusted input even when the model that generated it is usually helpful.
-
-## Export should freeze a meaning, not just a screenshot
-
-A downloaded report should explain what its values represent after the connection disappears.
-
-On export, resolve each live component to an authorized snapshot and include its observation time. Mark unavailable values honestly. Preserve the document's authored timestamp separately from the export timestamp and the metric's observation timestamp.
-
-Those three moments can differ:
+The agent doesn't get to decide what's live by writing a price in a sentence. It writes a token:
 
 ```text
-authored_at   → when the analysis was written
-observed_at   → when this metric was measured
-exported_at   → when this copy was produced
+{{ltp:NSE:INFY|ltp=1512.40|chgPct=0.81|asOf=2026-09-03T10:42:00+05:30}}
 ```
 
-Do not silently replace historical analytical inputs with current data while retaining the original conclusions. That produces an attractive document with an incoherent evidence trail.
+The grammar is closed. Exchange and symbol, then at most four attributes — `asOf`, `chgPct`, `kind`, `ltp` — and nothing else. Values containing quotes, angle brackets, or backticks are dropped, as is anything that looks like an `on*` handler. There's a cap of 24 islands per message.
 
-For an interactive archive, offer an explicit choice between the published snapshot and current observations. The distinction should be visible before the reader interprets the numbers.
+We deliberately don't detect "INFY at 1512" in prose. Guessing which numbers are prices is how a strike price, a target, or last year's close starts ticking live next to a sentence that was about something else. If the agent wants a live number, it asks for one explicitly. Historical numbers stay plain text.
 
-## Real-time behavior needs accessible restraint
+The backend normalises tokens before the answer is stored, including upgrading an older `{{quote:…}}` format, so the frontend only has to understand one.
 
-A rapidly changing interface can be distracting or difficult to use. Preserve focus, avoid layout shifts, and provide a pause or snapshot mode where continuous updates would interfere with reading.
+## Getting through the sanitiser
 
-Do not announce every tick to assistive technology. Decide which transitions deserve an announcement and which can remain available for inspection. A meaningful status change and a frequently updating count should not necessarily use the same announcement behavior.
+Chat markdown is rendered with Streamdown, which sanitises the HTML. That's good — it strips unknown tags and rewrites custom URL schemes to `[blocked]`. It also meant that every clever way of smuggling a custom element through got eaten.
 
-Test with slow data, missing data, long labels, multiple identical components, revoked access, and a disconnected tab returning after several hours. These are normal conditions for a document that is supposed to outlive the session that created it.
+So we stopped smuggling. Before rendering, each token becomes an ordinary relative link:
 
-## The most important label is not “live”
+```ts
+// {{ltp:NSE:INFY|ltp=1512.40}}  ->  [INFY](/__ananta-ltp__/NSE/INFY?ltp=1512.40)
+```
 
-It is “as of.”
+A relative link survives the sanitiser untouched. Our markdown link renderer recognises the `/__ananta-ltp__/` prefix and renders a `LiveLtpIsland` component instead of an anchor. React builds the DOM. The model never supplies any of it.
 
-Live components are valuable when they add a current view without damaging the integrity of the authored record. That requires more than a stream of numbers. It requires a contract about identity, freshness, failure, and what happens when the page stops being live.
+## One subscription per chat, not per chip
 
-Build that contract once in the trusted component layer. Then the model can request useful views without having to invent a real-time application inside every document it writes.
+A research answer can easily have twenty islands, and a chat can have several answers. A socket per chip would be absurd.
 
-### Technical notes
+Each chat has one `LivePriceIslandProvider`. Every island registers what it needs, and the provider merges those into a de-duplicated list keyed by `EXCHANGE:SYMBOL`, then opens a single live-price subscription for the chat. The flow:
 
-[1] Astro, [Islands architecture](https://docs.astro.build/en/concepts/islands/). The subscription and document-semantics design above extends the general selective-interactivity idea; it is not a claim about Astro's built-in data guarantees.
+- Every 30 seconds, and whenever the tab becomes visible again, the client posts its demand to an authenticated endpoint, scoped to the chat.
+- It opens a WebSocket and must send a `subscribe` message naming the account, broker, and symbols within five seconds, or the server closes it.
+- The server intersects the request with the user's actual subscriptions, then reads that user's Redis price streams and sends a snapshot first, then ticks.
+- The client batches incoming ticks for 200 ms before re-rendering, so a busy market doesn't redraw the chat thirty times a second.
 
-[2] MDN, [Window.postMessage](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage).
+Chat run events use server-sent events. Prices use a WebSocket. That isn't inconsistency. Run events are a log: every event matters, they're numbered, and a reconnect resumes from the last sequence. Prices are latest-value: if you missed ten ticks, you want the eleventh, not a replay. Different data needs a different recovery story.
 
-[3] MDN, [The iframe element](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/iframe). Sandbox configuration and origin behavior need review in the actual embedding environment.
+<ArticleDiagram stem="14-live-islands-static-reports-real-time-ui" alt="Fig. 1 — The agent writes closed tokens. The frontend turns them into island components that share one provider, one demand registration, and one WebSocket per chat. The canvas iframe gets ticks by postMessage." />
 
+## Live, snapshot, or nothing
 
-## Continue reading
+Each island shows one of three things:
 
-[Model-Agnostic AI Artifacts: Give the Model a UI Contract, Not Your Frontend](/blog/model-agnostic-ai-artifacts-ui-contracts/) · [Redis in Production: Stop Calling Everything a Cache](/blog/redis-production-patterns-cache-queues-locks/)
+```ts
+const ltp = liveTick?.ltp ?? snapshot.ltp ?? null;
+const isLive = liveTick?.ltp != null;
+const asOf = isLive ? null : snapshot.asOf;
+```
+
+A live tick is shown in normal colour. Without one, the snapshot from the token is shown muted, with its "as of" time. With neither, an em dash. The accessible label reads as a sentence — "INFY 1,512.40 rupees, up 0.81%, live" — rather than a cluster of numbers.
+
+Copying an answer copies the numbers *currently on screen*, flattened to text like `INFY 1512.40 (+0.81%)`, not the raw token. Live ticks are never fed back to the model. They're for the person reading.
+
+## Islands inside canvases
+
+Canvases built with the HTML kit run in a sandboxed iframe with an opaque origin. They can't open their own socket, and we wouldn't want them to. The parent page posts ticks to the iframe, and the kit's script inside only accepts a message if it came from its actual parent window:
+
+```js
+window.addEventListener("message", (e) => {
+  if (e.source !== window.parent || e.data?.type !== "aw-ltp") return;
+  repaint(e.data.ticks);   // keyed by EXCHANGE:SYMBOL
+});
+```
+
+## What the real-browser test found
+
+In mid-October we ran a positive and negative test of all this in a real sandboxed Chromium, and it found four bugs that unit tests hadn't:
+
+1. **Wrong exchange, same symbol.** The tick cache was keyed by symbol only, so a BSE tick, or a tick from a different account, could overwrite an NSE observation the user had selected. Keys now include exchange and account.
+2. **Any window could post ticks.** The canvas accepted price messages from any window, not just its parent. Now it checks `e.source`.
+3. **Null became zero.** A missing price attribute rendered as `0.00`. For a price, that's not a harmless default — it looks like the stock collapsed. It's an em dash now.
+4. **M&M.** Symbols with `&` in them fell outside the token grammar, and the raw token text leaked into the answer. The grammar now allows it.
+
+A week later we found a quieter issue upstream. Our REST poller handles 100 symbols per batch. Active workflows were pinning about 213, sliced in an order that changed every 30 seconds — so some symbols weren't polled for minutes, and their islands and alerts went stale with nothing visibly wrong. Overflow now rotates in a stable order.
+
+## What I'd still change
+
+Ticks are merged last-write-wins, with missing fields filled in from the previous value. That's fine for one feed per symbol, and it's the next thing to tighten if we add a second. Reconnects wait a fixed 2.5 seconds rather than backing off. And an island doesn't yet mark itself stale if ticks stop arriving while the socket stays open. It just keeps showing the last live value. That's on the list, because the most important thing a live price can tell you is when it stopped being live.

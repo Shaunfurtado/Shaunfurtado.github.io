@@ -1,8 +1,6 @@
 ---
-title: A Model-Agnostic Agent Harness Needs More Than an API Adapter
-description: Design a model-agnostic agent harness with explicit provider capabilities,
-  durable execution contracts, domain validation, safe fallbacks, and workflow-level
-  evals.
+title: Making an Agent Harness Model-Agnostic Without Pretending Models Are Interchangeable
+description: How Ananta runs the same agent across OpenRouter, Anthropic, and self-hosted OpenAI-compatible endpoints — one wire format, per-model capability records, refusal instead of silent fallback, app-owned retries, and domain rules that live in typed code.
 pubDate: '2027-01-05'
 tags:
 - ai-agents
@@ -13,152 +11,93 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/model-agnostic-agent-harness-domain-contracts/
-heroImage: /blog-assets/covers/16-model-agnostic-agent-harness-domain-contracts.png
-heroImageAlt: Portability is an execution contract — A Model-Agnostic Agent Harness
-  Needs More Than an API Adapter; an editorial diagram cover by Shaun Furtado.
-seoTitle: Model-Agnostic Agent Harness Architecture
+seoTitle: 'Model-Agnostic Agent Harness: Capabilities, Refusals, and Domain Contracts'
 series: Systems in Practice
 articleId: 16
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
+Our clients don't all want the same model. Some are happy with whatever OpenRouter routes to. Some want Anthropic. Some — especially anyone handling client portfolios under confidentiality rules — want certain content to stay on a model they host themselves. Ananta has to run the same agent, with the same tools and the same guarantees, across all three.
 
-Changing the model name in an API request is easy. Preserving the meaning of the application around that change is not.
+"Model-agnostic" is easy to claim and hard to mean. Here's what it means for us, and where we deliberately stopped.
 
-A different provider may return tool calls differently, count cached tokens differently, support a different structured-output path, or behave differently when a task needs repair. The surrounding system still has to preserve identity, policy, evidence, cancellation, and the truth of what happened.
+## One wire format
 
-That is why a **model-agnostic agent harness** needs more than an API adapter. The adapter translates the conversation with the model. The harness owns the execution contract of the application.
+Every provider goes through the `openai` SDK's Chat Completions shape, and the agent loop runs on the OpenAI Agents SDK. OpenRouter is the main path. Anthropic was added in May. Custom OpenAI-compatible endpoints — vLLM, an internal gateway, anything that speaks the protocol — were added in October.
 
-I would judge portability by whether those contracts survive a provider change—not by how few lines of configuration the change requires.
+Not every compatible endpoint can stream, so there's a small adapter that turns a non-streaming response into synthetic stream events. The rest of the harness doesn't need to know.
 
-## Decide what the model is allowed to vary
+That's the easy 20%. The rest is about what the wire format *doesn't* tell you.
 
-A model can vary in reasoning style, wording, planning quality, and how effectively it uses the tools available to it. Those differences may change product quality and need evaluation.
+## Each model declares what it can do
 
-It should not be able to vary the meaning of authorization, which tenant owns a resource, whether an approval is still valid, or what counts as a completed external action.
-
-Put those properties in application-owned code and durable state. The model can request an operation. The harness resolves the request against the current principal, task scope, policy, and resource version before anything executes.
-
-This division also improves debugging. When the authorization engine is deterministic, a refusal can be explained through a policy decision rather than reconstructed from a model's prose.
-
-## A thin common interface is useful, but incomplete
-
-Normalize a small set of concepts: model input, streamed output, tool request, tool result, usage record, stop reason, and error category.
-
-Then preserve provider-specific information where it matters. A common field called `input_tokens` is not useful if it hides different accounting definitions. A generic error called `failed` is not enough to decide whether a retry is safe or whether the user needs to change the request.
-
-Prompt caching illustrates the problem. Anthropic documents separate fields for uncached input, cache creation, and cache reads; OpenAI's caching documentation describes its own accounting and configuration behavior.[1][2] The adapter should retain the raw provider usage and produce normalized metrics with an explicit definition.
-
-Do not force every capability into the weakest shared interface. Expose a capability record and let the workflow choose an approved path.
-
-```text
-structured_output: supported / constrained / unavailable
-tool_execution: supported / constrained / unavailable
-artifact_revision: supported / constrained / unavailable
-usage_accounting: complete / partial / unavailable
-```
-
-These are application support judgments, not claims that a provider advertises exactly these fields.
-
-## Make fallback a policy decision
-
-A fallback is not automatically safe because it produces an answer.
-
-If the primary model cannot complete a structured artifact request, the application might switch to a constrained schema, reduce the task scope, request human assistance, or use another model that passed the workflow's evaluation suite.
-
-It should not silently bypass validation, expose additional tools, or remove an approval step to keep the conversation moving.
-
-Also consider data access. A provider that is permitted for one class of content may not be permitted for another under the application's contractual and organizational policies. Route using the task's data classification and approved provider set, not only latency or price.
-
-When a fallback changes the expected quality or available capability, make that visible where it affects the user's decision. “Completed through a simpler table view” is more honest than pretending the requested interactive artifact was produced.
-
-## Keep the harness core boring
-
-The core should manage stable concepts: principals, tasks, proposals, tool execution envelopes, evidence references, artifacts, checkpoints, budgets, and lifecycle events.
-
-A tool request should carry enough context for the harness to establish authority and ownership without relying on the model to restate them. A completion should be accepted only for the current execution identity and relevant version. A cancellation should propagate through owned child work and runtime resources.
-
-The model's final answer is one projection of this state. The user interface is another. An audit record is another. None should be the sole source of truth for the others.
-
-This separation prevents provider-specific message formats from leaking into every service. You may still retain the original request and response for permitted diagnostic purposes, with appropriate access and retention controls. They should not become the only representation of the business workflow.
-
-<ArticleDiagram stem="16-model-agnostic-agent-harness-domain-contracts" alt="Provider adapters feed a policy-owning harness; domain contracts and evidence checks constrain the tools and artifacts." />
-
-## Put domain meaning in explicit modules
-
-A generic tool registry does not know whether a value is a currency amount, a percentage, a timestamp, or a count. Domain-specific systems need additional contracts.
-
-In a finance-oriented workflow, a reported amount needs a currency and a period. A return calculation needs a definition and an interval. A comparison may need to account for different units, adjustments, or reporting bases. These are examples of analytical correctness requirements, not financial recommendations.
-
-The same pattern appears elsewhere. Logistics needs shipment identity and event time. Healthcare software needs carefully controlled clinical semantics and a much broader safety and regulatory design. Support workflows need account scope and the difference between a draft reply and an issued refund.
-
-The domain module should define typed entities, authorized operations, calculation rules, evidence requirements, and publication checks. It should not merely add a paragraph of specialist vocabulary to the system prompt.
-
-## A tiny calculation shows the boundary
-
-Consider a synthetic comparison of two amounts in the same declared currency:
+Every configured model has a capability record:
 
 ```python
-from decimal import Decimal, InvalidOperation
-
-def percentage_change(start: str, end: str) -> Decimal:
-    """Example convention: positive finite baseline; result is percent."""
-    try:
-        baseline, final = Decimal(start), Decimal(end)
-    except InvalidOperation as exc:
-        raise ValueError("Amounts must be decimal strings") from exc
-    if not baseline.is_finite() or not final.is_finite():
-        raise ValueError("Amounts must be finite")
-    if baseline <= 0:
-        raise ValueError("This convention requires a positive baseline")
-    return (final - baseline) / baseline * Decimal("100")
+class ModelCapabilities(BaseModel):
+    context_window: int = 32_768
+    supports_tools: bool
+    supports_streaming: bool
+    supports_vision: bool
 ```
 
-The function intentionally chooses a narrow convention. It rejects zero and negative baselines instead of pretending one percentage-change formula is meaningful for every analytical context. It does not establish currency compatibility, period alignment, or display rounding; the surrounding typed operation must do that.
+Before any request is sent, a dispatch gate checks it against that record and the workspace's policy. It refuses — with a message a person can act on — if the request has tools and the model doesn't support them, asks for streaming the endpoint can't do, includes images for a non-vision model, exceeds the context window once reserved output is counted, uses a provider or model that isn't on the allowlist, sends confidential content to an endpoint that isn't self-hosted, or uses third-party inference when the workspace has turned it off. If the endpoint configuration changes in the middle of a run, the run stops and asks for a new one.
 
-The model can request this operation after the application validates the inputs. The returned evidence should include the input references and the convention used. The model explains the result rather than becoming the authority for arithmetic performed in prose.
+```python
+if body.get("tools") and not caps.supports_tools:
+    raise InferencePolicyRefusal("This model does not support tools.")
+if estimate_tokens(body) + max_output > caps.context_window:
+    raise InferencePolicyRefusal("This request exceeds the model's context window.")
+if run.confidential and not endpoint.self_hosted:
+    raise InferencePolicyRefusal(confidential_refusal(endpoint))
+```
 
-`Decimal` avoids binary floating-point representation for these decimal inputs, but its arithmetic still has a precision context. A real domain calculation should specify that context and its rounding policy. A library choice does not replace a numerical contract.[3]
+The important word is *refuses*. There's no silent fallback to another model. If a confidential run can't go to the self-hosted endpoint because it's down, it doesn't quietly go to the cloud. And a model that can't do tools isn't handed a degraded, tool-less version of the agent as though that were the same product.
 
-## Context policy also belongs to the harness
+## Confidentiality follows the content
 
-A portable context builder should preserve the information the workflow needs: current instructions, authoritative constraints, active state, relevant evidence, and valid tool-call/result relationships.
+A run becomes confidential because of what it *retrieved*, not what it's called. Once confidential content is in a run, the label follows it into follow-ups, summaries, child runs, and canvases. Names, counts, and empty search results don't make a run confidential. That stickiness is why the compaction summariser has to pass the same policy check as the chat model — otherwise summarising would be a way to launder confidential text to a cheaper cloud model.
 
-It should adapt to the model's supported limits without treating all message formats as interchangeable. Tool messages may need provider-specific formatting, while the underlying action and evidence records remain provider-neutral.
+"Self-hosted" is something an admin declares about an endpoint. It isn't network attestation, and the docs say so. A private proxy in front of a cloud model is third-party inference, whatever its hostname. Custom endpoints have their own rules: external endpoints must use HTTPS; plain HTTP and private addresses are only allowed for endpoints declared self-hosted; cloud metadata and link-local addresses are blocked, including when they're hidden inside an IPv6 address; the resolved address is checked before TLS; redirects aren't followed; and changing an endpoint's origin means entering the API key again.
 
-Compaction should produce a validated checkpoint rather than an unreviewed replacement for authoritative state. Retrieval should respect the current principal. A summary that accidentally broadens permission must have no power to change the execution policy.
+<ArticleDiagram stem="16-model-agnostic-agent-harness-domain-contracts" alt="Fig. 1 — The agent loop runs through harness wrappers and a dispatch gate that checks each request against the model's capabilities and the workspace's policy before any provider sees it. Tool results pass through typed domain validators." />
 
-Cache-aware serialization can then optimize stable prefixes within those correctness constraints. Do not contort the domain model to manufacture a prettier cache metric. A highly reusable prompt that omits the current resource version is efficiently wrong.
+## Token counts without a tokeniser
 
-## Portability has an operating cost
+We can't load a tokeniser for every model a client might plug in. So we estimate at three bytes per token — four is typical, and three leaves a 33% margin — and use that *same* estimate everywhere: admission, packing history, and the dispatch gate. If the three disagreed, a request could pass admission and then fail at dispatch.
 
-Supporting several models creates a testing matrix. Each combination of model, prompt version, tool profile, artifact contract, and context strategy can behave differently.
+That estimate drives a real product decision. The full tool catalogue plus instructions is about 50,500 estimated tokens. A model with a 64k window is the minimum we'd call comfortable, and 128k is preferred. A 32k model gets a reduced catalogue and loads further tools on demand, eight at a time. It works, but it's a different, slower agent, and we tell the admin that rather than pretend otherwise.
 
-Reduce that matrix deliberately. Maintain a small set of approved workflow profiles rather than promising that every model supports every feature. Pin and record versions where the provider makes that possible. Re-evaluate meaningful changes instead of assuming a compatible API response implies compatible behavior.
+## The harness owns retries and quirks
 
-The goal is not provider neutrality at any cost. Sometimes a specialized capability justifies a provider-specific path. Keep that decision visible and contain it behind a contract so the rest of the application does not accidentally depend on it.
+The provider SDK runs with `max_retries=0`. Our retry policy classifies failures — transient transport, rate limited, quota exhausted, unknown tool, repeated tool call, unpaired tool results, unsupported parameter, policy refused — and treats each differently: 2-second base delay, 12-second maximum, a 60-second cap on any delay the server asks for, and a 75-second limit on an idle stream. That came from an SDK honouring an hours-long `Retry-After` inside a job with a ten-minute timeout.
 
-A system can be portable without pretending its components are interchangeable commodities.
+Model quirks are handled in code, not in prompts. Some models write tool calls as JSON in their reply text instead of making a real call, so for canvas tools there's a recovery path that detects and executes those. Planning-only mode is enforced by wrapping the tools so they refuse, not by asking the model nicely. A truncated completion is recorded from the wire receipt and either continued or marked incomplete.
 
-## The strongest claim is the one your contracts support
+## Domain rules live in typed modules
 
-“Works with every model” is usually too broad to be useful. “This workflow is supported on these tested configurations, with these limits and these failure behaviors” is something an engineering team can operate.
+The model can vary. The rules about money can't. So they don't live in the prompt.
 
-The same restraint applies to claims such as first-of-its-kind or state of the art. A clear account of authorization, context, recovery, artifacts, and evaluation demonstrates more than a superlative without a comparison methodology.
+```python
+class FinanceMetricBinding(BaseModel):
+    symbol: str
+    scope: Literal["standalone", "consolidated"]
+    period: str
+    metric: Literal["revenue", "pat", "eps", "operating_profit"]
+    unit: str
+    multiplier: Literal[1, 4] = 1   # 4 only for hypothetical calculator EPS
+```
 
-The harness is where those decisions become enforceable. Models can improve, regress, or be replaced. The application still needs to know who asked, what was allowed, what ran, what changed, and what evidence supports the answer.
+Standalone and consolidated figures are never mixed. Annualising quarterly EPS by four is allowed only in a hypothetical calculator, and it's disclosed as an assumption. A cited source has to be a URL the run actually retrieved or a receipt for a tool event the run owns. The research delivery gate holds back a report with named reasons when coverage, freshness, or pagination can't be verified. All of that is code that any model's output passes through. When we switch models, none of it changes.
 
-That is the kind of portability worth building.
+Typed extensions work the same way. A calculator extension declares one host capability, sandbox execution, with a pinned implementation file. The API process never imports extension code. An extension only attaches if it's enabled *and* passed its fixture evaluation. If the sandbox isn't healthy, extension tools disappear rather than fail halfway.
 
-### Technical notes
+## Where we stopped, honestly
 
-[1] Anthropic, [Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
+Two things I want to be clear about.
 
-[2] OpenAI, [Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching). Provider capabilities and accounting should be rechecked before deployment; this article does not claim identical behavior across providers.
+First, the self-hosted endpoint path was merged in late October without a live test against a real self-hosted model. That was a deliberate owner decision; what we tested is a synthetic OpenAI-compatible server that behaves like one. I'm not going to claim it's proven with vLLM or Ollama until it is.
 
-[3] Python, [decimal — Decimal fixed-point and floating-point arithmetic](https://docs.python.org/3/library/decimal.html). The example is a narrow numerical illustration, not a complete financial calculation policy.
+Second, search. In October DuckDuckGo began answering our server with a bot challenge. The harness escalated to the browser session, which was stale, and agents went round in retry loops. We added commercial search APIs, removed them the same day after discussion, and settled on a keyless metasearch package pinned to an exact version. Not every dependency is a model, but the rule is the same: pin it, check what it actually returned, and refuse clearly when it can't do the job.
 
-
-## Continue reading
-
-[Context Engineering for AI Agents: Build a Working View, Not a Bigger Transcript](/blog/context-engineering-ai-agents-working-state/) · [Model-Agnostic AI Artifacts: Give the Model a UI Contract, Not Your Frontend](/blog/model-agnostic-ai-artifacts-ui-contracts/)
+Model-agnostic, for us, doesn't mean any model gives the same result. It means any model gets the same contract — the same refusals, the same evidence rules, the same domain checks — and when one can't meet it, the system says so instead of degrading quietly.

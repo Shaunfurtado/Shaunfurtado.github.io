@@ -426,23 +426,68 @@ a {
 }
 
 .article-diagram {
-  margin: 2.5rem 0;
-  padding: 1rem;
-  border: 1px solid color-mix(in srgb, var(--ink) 18%, transparent);
-  background: color-mix(in srgb, var(--surface) 74%, transparent);
+  margin: 2.75rem 0;
+  padding: 1.5rem 0 0.9rem;
+  border-block: 1px solid color-mix(in srgb, var(--ink) 16%, transparent);
 }
 
 .article-diagram__canvas {
   overflow-x: auto;
-  padding: clamp(0.5rem, 2vw, 1.25rem);
-  background: #f6f4ee;
+  background:
+    radial-gradient(circle, color-mix(in srgb, var(--ink) 11%, transparent) 1px, transparent 1.4px) 0 0 / 1.25rem 1.25rem;
 }
 
 .article-diagram__canvas svg {
   display: block;
-  width: max(100%, 44rem);
+  min-width: 26rem;
+  max-width: 100%;
   height: auto;
   margin-inline: auto;
+}
+
+.article-diagram__canvas svg .graph > polygon { fill: transparent; stroke: none; }
+
+.article-diagram__canvas svg .node :is(path, polygon, ellipse) {
+  fill: var(--void);
+  stroke: color-mix(in srgb, var(--ink) 42%, transparent);
+}
+
+.article-diagram__canvas svg .node text {
+  fill: var(--ink);
+  font-family: var(--font-sans);
+}
+
+.article-diagram__canvas svg .node.key :is(path, polygon, ellipse) {
+  fill: var(--ink);
+  stroke: var(--ink);
+}
+
+.article-diagram__canvas svg .node.key text { fill: var(--void); }
+
+.article-diagram__canvas svg .node.ghost :is(path, polygon, ellipse) {
+  fill: transparent;
+  stroke-dasharray: 3 3;
+}
+
+.article-diagram__canvas svg .node.ghost text { fill: var(--muted); }
+
+.article-diagram__canvas svg .edge path { stroke: var(--muted); }
+
+.article-diagram__canvas svg .edge polygon {
+  fill: var(--muted);
+  stroke: var(--muted);
+}
+
+.article-diagram__canvas svg .edge text,
+.article-diagram__canvas svg .cluster text {
+  fill: var(--muted);
+  font-family: var(--font-mono);
+}
+
+.article-diagram__canvas svg .cluster :is(path, polygon) {
+  fill: color-mix(in srgb, var(--ink) 3%, transparent);
+  stroke: color-mix(in srgb, var(--ink) 20%, transparent);
+  stroke-dasharray: 2 4;
 }
 
 @media (prefers-reduced-motion: reduce) {

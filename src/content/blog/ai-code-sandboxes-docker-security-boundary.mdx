@@ -1,7 +1,6 @@
 ---
-title: 'AI Code Sandboxes: Docker Is a Starting Point, Not a Complete Security Story'
-description: Design AI code sandboxes around untrusted execution, network policy,
-  resource limits, cleanup, and isolation—not just a container that starts successfully.
+title: What Our AI Code Sandbox Actually Looks Like
+description: The runtime chain, the hardening flags, the memory maths, and the bugs — including a write that returned 200 and then 404 — behind the Python sandbox in a self-hosted agent platform.
 pubDate: '2026-11-03'
 tags:
 - ai-agents
@@ -12,157 +11,101 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/ai-code-sandboxes-docker-security-boundary/
-heroImage: /blog-assets/covers/02-ai-code-sandboxes-docker-security-boundary.png
-heroImageAlt: 'Docker is the starting point — AI Code Sandboxes: Docker Is a Starting
-  Point, Not a Complete Security Story; an editorial diagram cover by Shaun Furtado.'
-seoTitle: AI Code Sandbox Security Beyond Docker
+seoTitle: 'AI Code Sandbox Design: MicroVMs, gVisor, and Real Failure Modes'
 series: Systems in Practice
 articleId: 2
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
+The agent in Ananta can write and run Python. Analysts use it all the time: reshape a holdings export, compute rolling returns, plot a sector breakdown, turn a CSV the browser agent downloaded into a clean table. It's one of the most useful tools we ship, and it's the one I worry about most, because it runs code a language model wrote on a server that also holds a client's broker credentials.
 
-A Python script does not become trustworthy because a helpful model wrote it.
+This is how the sandbox is built today, and the things that went wrong on the way there.
 
-That sounds obvious until you look at the environment the script receives: the API container's environment variables, a writable project directory, network access, and whatever credentials happened to be mounted for an unrelated service.
+## A separate service with nothing worth stealing
 
-The script may only need to group a CSV by month. The environment has given it enough authority to do considerably more.
+The sandbox is its own FastAPI service, the sandbox broker. The backend never runs model-written code itself. When the agent calls `sandbox_run_python`, the backend mints a short-lived HMAC grant — subject, expiry, nonce, a capability (`python.exec` or `workspace.write`), and the chat session key — with a two-minute TTL. The broker checks the signature, expiry, and capability before it does anything else.
 
-For **AI code execution sandboxes**, the central question is not “Can this code run?” It is “What remains protected when this code behaves badly?”
+One honest caveat: the broker doesn't keep a nonce table, so grants are short-lived, not single-use. Two minutes is the replay window. I'd rather say that plainly than imply a guarantee we don't enforce.
 
-## Begin with the hostile version of an ordinary task
+What the guest gets is just as important as what it doesn't. Guests never mount the application data volume, the browser profiles, or the artifact store. They never receive Redis credentials or the encryption key. The broker also has a hard list of mount prefixes it will refuse — `/data`, `/home`, `/root`, `/etc`, `/var/run/docker.sock`, and our own state directory — so a configuration mistake can't quietly hand the guest the host.
 
-Take a mundane request: inspect an uploaded spreadsheet, calculate totals, and generate a chart.
+## The runtime is chosen by what the host can actually do
 
-The happy path needs a bounded input file, a Python runtime, some installed libraries, temporary storage, and a way to return outputs. It does not need the production database, another user's files, browser cookies, cloud credentials, or unrestricted internet access.
+We don't control the client's hardware, so the broker picks the strongest runtime available and tells you which one it picked:
 
-Now consider failures that do not require an especially sophisticated attacker. The code can loop forever. A dependency can allocate too much memory. An archive can expand far beyond its compressed size. A plotting routine can produce thousands of files. A network request can stall. A generated path can point outside the intended workspace.
-
-Those are enough reasons to separate the execution environment before discussing exotic escape techniques.
-
-My preferred design begins with a broker. The application submits a typed job describing approved inputs, limits, and expected output categories. The broker creates or assigns a runtime, materializes the inputs, executes the task, and returns a manifest of candidate artifacts.
-
-The model should not choose arbitrary host mounts or decide which security runtime is “good enough” today.
-
-## A container is a mechanism, not a completed threat model
-
-Docker's namespaces, cgroups, and related controls are useful building blocks. Docker's own security guidance also makes clear that the daemon and its control interface require careful protection.[1]
-
-The configuration matters as much as the word “container.” A privileged container with broad host mounts and daemon access is a very different boundary from an unprivileged container with a read-only root filesystem and a tightly controlled working directory.
-
-For higher-risk untrusted workloads, a sandboxed runtime such as gVisor adds a different isolation layer. That does not mean every system call, workload, or performance characteristic behaves exactly as it would in a conventional container.[2] A microVM is another design option, with different operational costs.
-
-**“We run it in Docker” is an implementation detail. It is not a sufficient answer to “What can the generated code reach?”**
-
-Choose the boundary against the threat model, test the required workloads, and fail closed when the required isolation is unavailable. A production system should not silently downgrade to host execution to preserve the illusion of availability.
-
-## Split authorization from runtime configuration
-
-A useful job request might look like this:
-
-```json
-{
-  "input_handles": ["upload_32"],
-  "runtime_profile": "python-analysis",
-  "network_profile": "disabled",
-  "limits": {
-    "wall_seconds": 45,
-    "memory_mib": 768,
-    "cpu_cores": 1,
-    "output_bytes": 12000000,
-    "output_files": 12
-  },
-  "allowed_outputs": ["text/csv", "image/png"]
-}
+```python
+def select_runtime(host) -> Runtime:
+    if host.has_kvm and boxlite_ok():
+        return Runtime("microvm", reason="BoxLite on /dev/kvm")
+    if host.has_runsc:
+        return Runtime("isolated-container", reason="gVisor runsc")
+    if settings.SANDBOX_ALLOW_LOCAL_RUNTIME:
+        return Runtime("docker-container", reason="local opt-in, dev only")
+    return Runtime.unavailable("no isolating runtime on this host")
 ```
 
-These values are illustrative, not recommended defaults. A numerical workload and an image-processing workload need different measured envelopes.
+A BoxLite microVM when the host exposes `/dev/kvm`. Otherwise a gVisor container. Plain Docker only when an operator explicitly opts in, and the health check labels it `docker-container` so nobody mistakes it for isolation. If none of those exist, the tool is unavailable and the agent says so.
 
-The service must resolve `upload_32` under the authenticated user's scope. It must not treat knowledge of the handle as permission. The runtime profile must be selected from a server-owned catalog, not interpreted as an arbitrary image name supplied by the model.
+The container-level flags are the boring list you'd expect, and every one of them is there on purpose:
 
-The network profile should map to enforced routing and firewall behavior. A boolean in a job record does not disable a network interface.
+```python
+client.containers.run(
+    "python:slim",
+    command=["sleep", "infinity"],
+    network_mode="none",
+    read_only=True,
+    tmpfs={"/tmp": "size=64m"},
+    cap_drop=["ALL"],
+    security_opt=["no-new-privileges"],
+    mem_limit="512m",
+    nano_cpus=1_000_000_000,
+    runtime="runsc",
+)
+```
 
-I also prefer separating the user-visible timeout from the runtime's hard termination deadline. The interface can report a slow task and offer cancellation before the system reaches its final kill threshold. That distinction improves both resource control and user experience.
+Code runs through `exec` into that sleeping container. A timeout (30 seconds by default, 120 at most) kills the whole container with exit code 124, not just the process. The workspace survives because it lives outside the container.
 
-## Treat the lifecycle as a resource contract
+<ArticleDiagram stem="02-ai-code-sandboxes-docker-security-boundary" alt="Fig. 1 — The backend mints a grant and writes tool data into the workspace. The broker verifies the grant, checks memory admission, and runs code in the strongest runtime the host supports, with no network." />
 
-A sandbox has more states than running and stopped.
+## No network, and no exception path
 
-<ArticleDiagram stem="02-ai-code-sandboxes-docker-security-boundary" alt="Sandbox lifecycle from admission through isolated execution, output quarantine, promotion, and cleanup." />
+Early drafts of this design had a "network profile" the agent could ask for. We dropped it. The guest has `network_mode: none` and there is no way to open it.
 
-Admission checks whether the system can safely accept the task. Materialization copies only approved inputs. Execution applies limits. Collection brings candidate outputs into quarantine. Validation decides what can be promoted. Cleanup removes or resets the execution environment.
+The agent still needs data, so the backend writes it in. When a tool returns a large result — a quote history, a fetched web page, a browser download — the harness materializes it as a file in the session's workspace under `/workspace/tools`, `/web`, or `/runs`, and keeps an `INDEX.json` the code can read. The model doesn't have to paste 40,000 rows into a code cell, and the sandbox never needs credentials to fetch anything.
 
-The cleanup stage is not housekeeping to add later. It is part of the isolation boundary.
+Deliverables go in `/workspace/user/out`. The broker validates every path it hands back as a download, and as of October a path outside the allowed workspace raises an error instead of being skipped quietly.
 
-A warm runtime can save startup time, but reusing it requires confidence that filesystem state, processes, memory-bearing services, temporary credentials, and tenant-specific data have been reset. A clean-looking working directory is not proof of a clean runtime.
+## Capacity is a memory problem
 
-For a first implementation, destroying a per-task environment may be easier to reason about than aggressive pooling. Pool only after measuring that cold starts are an important part of the user-visible latency, and after defining a reset procedure that you can test.
+On a client's single VPS, what runs out first is memory, not CPU and not container count. So admission is a formula, not a feeling:
 
-## Network denial needs an exception path
+```python
+slots = int((mem_available / 1.2 - reserve_mib) / per_guest_mib)
+# reserve_mib = 1024, per_guest_mib = 512
+```
 
-Some tasks genuinely need network access. Installing a package dynamically, retrieving a public dataset, or calling an approved API can be legitimate.
+Two details matter more than the formula. Guests that are still starting count against capacity before their expensive startup finishes. Otherwise a burst of requests all pass admission and then all start at once. And existing guests are charged their full memory cap, not their current usage, because a guest that's idle now can allocate its full 512 MiB a second later.
 
-The mistake is converting that need into “allow everything.”
+On top of that there's a global ceiling of 16 boxes, one slot per user-and-session, and a 90-second idle TTL. When a session goes idle, the broker exports its workspace as a tarball to an ephemeral volume and frees the slot. The next request restores it.
 
-I would separate dependency preparation from task execution where practical. Curated runtime images can contain commonly used libraries. An input-fetching service can retrieve approved resources and materialize them as files. A narrowly scoped egress profile can be issued for the exceptional task that cannot work offline.
+## Bugs that taught me something
 
-An allowlisted hostname is only part of that policy. Redirects, DNS resolution, private address ranges, alternate protocols, and internal metadata services need consideration at the actual network boundary. Application-level URL validation alone is not a complete egress control.
+**"Local mode" used to be a subprocess.** Until September, the dev-only local runtime ran Python as a subprocess inside the broker itself. The comment said "not a security boundary", which was true and not reassuring. We rewrote it as a real container with no network and all capabilities dropped. Docker Desktop can't bind a named-volume subdirectory into a child container, so local mode keeps the workspace inside the container and moves files in and out through Docker's archive API. It's slower and it's correct.
 
-There is also a product decision hiding here: a task that requires a new dependency may have to wait for an image update or use a different path. That can be a better outcome than granting arbitrary package installation and credentials to every code run.
+**BoxLite without nested KVM panics.** On Docker Desktop, BoxLite would panic inside its own initialisation before our fallback logic got a chance to run. Now the fallback order never puts BoxLite ahead of a runtime that's already been selected. Upgrading to BoxLite 0.10 brought its own list: exec output has to be read from the streams rather than from `wait()`, setting the working directory fails if it doesn't exist yet, and on Ubuntu hosts with AppArmor the broker has to run privileged for bubblewrap to work.
 
-## The output directory is another untrusted input
+That last point deserves to be said clearly. The broker is privileged and holds the Docker socket, so it's a high-trust component. The isolation is the guest boundary — the microVM or gVisor — not the broker. The broker's job is to be small and to refuse things.
 
-It is easy to focus on the code and trust whatever file it leaves behind.
+**Write returned 200, read returned 404.** In mid-October an analyst imported a CSV the browser agent had downloaded. The import returned HTTP 200. Opening the file straight after returned 404.
 
-Do not.
+BoxLite was writing its snapshot archive, `/workspace/.snapshot.tgz`, *inside the directory it was archiving*. GNU tar exited with status 1 — "file changed as we read it" — the pool swallowed the error, saved a stale copy of the host mirror, and acknowledged the import anyway.
 
-A generated file can have a misleading extension, enormous dimensions, unexpected embedded content, or a name designed to confuse a download path. Archive members can contain absolute paths, parent traversal, symlinks, or collisions. A file can also simply be the wrong result.
+The fix: archives go to unique paths in the guest's `/tmp`; a tar failure stays a failure; an import is only acknowledged after the host-side size and SHA-256 match what was written; and reads take the same session lock as writes. While we were in there we found that best-effort snapshot export had also dropped deliverables now and then, so `/user/out` is copied explicitly. A related change means a failed restore now says "retained workspace was preserved" instead of starting the user on an empty workspace.
 
-The collector should walk an allowed output root using filesystem-safe operations, reject unsupported object types, impose byte and count limits, and avoid following untrusted links. Path normalization is useful but is not, on its own, a defense against races in a live filesystem.
+## Calculators with receipts
 
-For archive import, validation must happen before extraction into any trusted location. For exports, a manifest should record the actual media type, size, digest, and producing attempt. Malware scanning and content sanitization can be additional controls; neither should be described as proving a file harmless.
+The newest piece is extension functions. An operator can enable typed calculators — position sizing, a VWAP variant, a fee schedule — that show up inside the guest as `ananta.ext.<name>(...)`. Every call appends a line to `runs/extension_calls.jsonl` with the tool, version, input hash, output hash, and status. If a hard kill stops the run before that file is finalised, the result reports `extension_calls_complete=false` rather than pretending the log is whole.
 
-Correctness validation is separate again. A syntactically valid CSV may contain totals that do not match the input. A successfully rendered chart may use the wrong axis. The task contract should describe what makes an output useful, not merely downloadable.
+The model can *propose* a new calculator: standard-library-only source, up to 20,000 characters, with 1 to 20 test fixtures. Passing the fixtures doesn't enable it. Only the owner, through an approval card, can turn on that exact evaluated version. No model, child run, or planning mode can do it on its own.
 
-## Cancellation should travel outside the model loop
-
-A stop request cannot depend on the model choosing to call a cancellation tool.
-
-The control path should reach the broker directly. The broker can stop new execution, send a graceful termination request, wait for a bounded interval, and force termination when necessary. It must also reclaim associated resources and prevent a late completion from overwriting the cancelled state.
-
-Already-produced artifacts need a policy: retain them as partial outputs, discard them, or expose them only after an explicit review. The right answer depends on the task. What matters is that the interface does not quietly label a partial report complete.
-
-The same mechanism should handle wall-clock expiry. Cancellation and timeout can share termination machinery while retaining different reasons in the event record.
-
-## Size capacity by the thing that actually runs out
-
-CPU percentage is not always the limiting factor. A workload can spend most of its time waiting for a library or an input while holding a large memory footprint. Another can use little memory but generate excessive output.
-
-Measure peak memory, CPU time, wall time, startup time, filesystem growth, and output volume separately. Keep reserves for the host and the broker. Enforce per-task ceilings even when aggregate capacity appears available.
-
-There is no universal safe concurrency count. A host with enough total memory on paper may still lack the available headroom for the next job. A static capacity estimate is an admission heuristic, not a live safety guarantee.
-
-Under pressure, queueing or rejecting work is better than creating a runtime that is likely to be killed halfway through a user's calculation.
-
-## A practical acceptance exercise
-
-Before adding more languages or larger runtimes, test the deliberately boring failures.
-
-Run a task that exceeds memory. Run one that ignores graceful termination. Attempt to read an input belonging to another principal. Produce a symlink in the output directory. Return a file larger than the artifact limit. Crash the broker while a runtime exists, then restart it and check orphan cleanup.
-
-Also test a valid, computationally expensive task. A sandbox that blocks everything is easy to secure and useless to operate.
-
-The aim is a bounded environment that completes the intended work, explains refusal, and leaves the rest of the system unaffected when a task fails.
-
-That is the sandbox's job. The model's good intentions are not part of the boundary.
-
-## Technical notes
-
-[1] [Docker Engine security](https://docs.docker.com/engine/security/).
-
-[2] [gVisor documentation](https://gvisor.dev/docs/).
-
-
-## Continue reading
-
-[Deterministic Infrastructure for AI Agents: Make Every Action Accountable](/blog/architecting-deterministic-infrastructure/)
+Those receipts are evidence of a calculation, not authorization and not a tamper-proof attestation. Being precise about that is a lot of what this work has turned out to be.

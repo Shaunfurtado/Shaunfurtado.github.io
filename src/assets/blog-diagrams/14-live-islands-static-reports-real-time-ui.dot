@@ -1,20 +1,14 @@
-digraph design {
-graph [rankdir=TB, bgcolor="#f6f4ee", pad="0.32", nodesep="0.42", ranksep="0.55", splines=polyline, fontname="DejaVu Sans", fontsize=18];
-node [shape=box, style="rounded,filled", fillcolor="#ffffff", color="#b9c8c4", penwidth=1.3, fontname="DejaVu Sans", fontsize=17, margin="0.20,0.16"];
-edge [color="#58736e", fontname="DejaVu Sans", fontsize=12, arrowsize=0.7, penwidth=1.4];
-doc [label="Authored document\nanalysis snapshot",fillcolor="#16352f",fontcolor="#ffffff",color="#16352f"];
-static [label="Static narrative\nauthored_at"];
-registry [label="Authorized subscription\nregistry + reference counts"];
-live [label="Live islands\nvalue + observed_at + state"];
-export [label="Frozen export\nsnapshots + exported_at"];
-source [label="Scoped data source\nversions + recovery"];
-doc -> static [label="preserve meaning"];
-doc -> registry [label="approved references"];
-source -> registry [label="current observations"];
-registry -> live [label="bounded updates"];
-static -> export [label=""];
-live -> export [label="freeze + label"];
-{rank=same; doc; static;}
-{rank=same; source; registry; live;}
-{rank=same; export;}
+digraph islands {
+rankdir=TB;
+answer [label="agent answer\n{{ltp:NSE:SYM|…}}"];
+md [label="token → relative link\nsurvives sanitiser"];
+island [label="LiveLtpIsland ×N"];
+prov [label="one provider per chat\ndeduped demand", class="key"];
+ws [label="WebSocket\nsnapshot, then ticks"];
+redis [label="Redis price streams", class="ghost"];
+frame [label="canvas iframe\npostMessage"];
+answer -> md -> island -> prov;
+prov -> ws [label="subscribe ≤5s"];
+redis -> ws;
+prov -> frame [label="aw-ltp", style=dashed];
 }

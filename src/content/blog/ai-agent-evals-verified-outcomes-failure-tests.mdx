@@ -1,8 +1,6 @@
 ---
-title: 'Agent Evals That Matter: Test the Failures a Demo Never Shows'
-description: Evaluate AI agents with verified outcomes, deterministic invariants,
-  stateful failure scenarios, repeated trials, and cost per successful task—not polished
-  prose.
+title: What a $0.84 Paid Evaluation Taught Us About Our Agent
+description: Evidence-based completion from audit events instead of the model's word, typed blockers, a repair budget that ignores rewritten prose, a paired benchmark on frozen inputs — and the real numbers, including the gates we failed.
 pubDate: '2027-01-12'
 tags:
 - ai-agents
@@ -13,135 +11,101 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/ai-agent-evals-verified-outcomes-failure-tests/
-heroImage: /blog-assets/covers/15-ai-agent-evals-verified-outcomes-failure-tests.png
-heroImageAlt: 'Verify outcomes, not confidence — Agent Evals That Matter: Test the
-  Failures a Demo Never Shows; an editorial diagram cover by Shaun Furtado.'
-seoTitle: 'AI Agent Evals: Test Outcomes and Failure Modes'
+seoTitle: 'AI Agent Evals: Evidence, Paired Benchmarks, and Honest Results'
 series: Systems in Practice
 articleId: 15
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
+"The agent said it fetched the filing" and "the agent fetched the filing" are different claims. For the first few months of Ananta's agent, our idea of a finished run was mostly the first one. This post is about how we moved to the second, and about the evaluation that showed us where we still weren't.
 
-An agent says it created the report. The final message is clear, the formatting is good, and the screenshot looks convincing.
+## Done is decided by evidence, not the model
 
-The report does not exist.
+When a user sends a message, a deterministic planner — not a model — reads the message and the desk state and works out what kinds of evidence a real answer needs:
 
-This is a useful evaluation case because a language-only judge might still reward the answer. The system performed the appearance of completion without establishing the fact of completion.
+```python
+EVIDENCE_KINDS = (
+    "link_fetch",     # the user pasted a URL
+    "web_grounding",  # a claim about the world
+    "broker_read",    # anything about their holdings or orders
+    "calculation",    # a number we have to compute
+    "canvas",         # they asked for something on the desk
+    "mcp_or_intel",   # market data or research sources
+)
+```
 
-For **AI agent evaluation**, I want the success condition to live outside the model's own account of what happened. A report has an artifact identity and a persisted revision. A scheduled task has a durable record. A sent message has an acknowledged or explicitly uncertain delivery outcome.
+When the agent says it's finished, a checker walks the run's *audit events* — what tools actually ran and what they returned — not the model's description of what it did. If someone pasted a link and there's no successful fetch of that link, the run isn't done. A calculation done in the model's head doesn't count as a calculation. An artifact request is done when the file exists *and* it's listed for the user.
 
-The final sentence is evidence of what the model said. It is not proof of what the system did.
+Some outcomes are legitimately done without the evidence. These are typed blockers: `needs_human`, `action_required`, `source_unreadable`, `url_unreadable`, `policy_denied`, `capacity_exhausted`, `plane_unavailable`. A paywalled page that returns `url_unreadable` is an honest answer. A paragraph that sounds like the page was read is not.
 
-## Evaluate the whole task, then isolate the cause
+## Nudges have their own budget
 
-An agent application contains several systems that fail differently: a model, a context builder, a tool layer, a policy engine, a scheduler, external services, and a user interface.
+If evidence is missing, the harness nudges the agent to continue, up to three times. That budget is separate from provider retries, so a 503 from the model provider can't use up the attempt that was meant to say "please actually fetch the URL".
 
-A single end-to-end score can tell you that performance changed. It often cannot tell you why.
+There's also a repair budget that's harder to fool:
 
-I would separate deterministic contract tests, integration scenarios, and model-dependent task evaluations. Contract tests establish invariants such as “a stale owner cannot commit a result.” Integration scenarios establish behavior across stateful components. Model evaluations test whether the system chooses and completes appropriate work on representative tasks.
+```python
+class CompletionRepairBudget:
+    def __init__(self, max_unchanged_repairs: int = 1):
+        self.limit = max_unchanged_repairs
+        self.seen = Counter()
 
-Anthropic's discussion of agent evals distinguishes the task, trial, grading process, transcript, and outcome.[1] That separation is useful because it stops the transcript from becoming the only thing you inspect.
+    def allow(self, requirements) -> bool:
+        signature = sha256(sorted(pending(requirements)))
+        self.seen[signature] += 1
+        return self.seen[signature] <= self.limit
+```
 
-## Turn invariants into executable assertions
+It hashes the *pending requirements*, not the answer text. An agent that rewrites its prose without verifying anything new hasn't made progress, and gets no second repair. One that verified another source has changed the signature and keeps going.
 
-Start with claims that should not depend on model quality.
+When the budget runs out, the run completes as `evidence_status=partial`, with a visible strip in the UI saying what couldn't be verified. Hiding that, or failing the whole run, would both be worse.
 
-A cross-tenant artifact reference must be rejected. An expired approval must not dispatch. A cancellation from an old run must not cancel a newer one. A failed compaction must not advance the history boundary. A duplicate completion must not publish a second result.
+<ArticleDiagram stem="15-ai-agent-evals-verified-outcomes-failure-tests" alt="Fig. 1 — A deterministic planner sets the required evidence. The checker reads audit events, not the model's claims. Missing evidence gets up to three nudges; then the run completes as partial with a visible strip." />
 
-These assertions can often be tested with ordinary unit and integration tests. You do not need a model call to find out whether a conditional database update checks the generation number.
+## The paid evaluation
 
-Keep the failure fixtures small enough to understand. A test with fifty mocked services can become its own source of false confidence. For critical concurrency behavior, include tests against the actual persistence primitive you rely on, not only an in-memory imitation.
+In early October we ran the agent against the hosted build with real money: 15 sessions written as scenarios, 45 parent runs, 562 provider calls, about 19.85 million input tokens (62.8% from cache), and 372,000 output tokens. Provider-reported cost settled at $0.84, plus $0.22 in reservations that never resolved, against a $5 target and a $10 hard ceiling.
 
-A mock that implements a lock more strongly than your real datastore is a particularly expensive form of optimism.
+Some numbers were good. Some weren't:
 
-## Design adversarial timelines, not only adversarial prompts
+| Measure | Result |
+|---|---|
+| Median parent run | 177 s |
+| p95 parent run | 828 s |
+| p95 queue delay (overall) | 1.5 s |
+| p95 queue delay (10 follow-ups in a burst) | 111 s |
+| 250-job burst on 16 slots | ~490 s to drain, gate was 120 s — **failed** |
+| Child runs | 3 completed, 3 partial, 2 timed out, 2 cancelled |
 
-Prompt injection matters, but many serious failures require no malicious text.
+The defects it found were more useful than any of the numbers:
 
-A worker loses its lease while an external request is in flight. A human approves a document and someone edits it before dispatch. A child task finishes after its parent is cancelled. A browser command arrives after control was handed to a person. A stream reconnects after missing an update.
+- A comparison mixed **standalone and consolidated** figures for the same company. Both were real numbers, and they weren't comparable. Scope is now a required field when a number is bound to filing data.
+- The model **invented a plausible exchange PDF link**. It was withdrawn, and sources now have to be URLs the run actually retrieved.
+- A **draft-only request activated a skill override**. Proposals now stay inactive until a person turns them on.
+- A **child timed out immediately and borrowed a parent's worker**, which led us to a deadlock in our queues.
+- A workflow checklist offered a **configuration sample as proof** that the workflow had actually run.
+- **Planning-only mode** used 4 calls, called a tool it shouldn't have, and took 81 seconds. After making tool denial a hard per-turn policy rather than a prompt instruction: 1 call, 0 tools, 19 seconds.
 
-Write those timelines down and make the test harness control the relevant boundaries. Pause before a commit. Inject a timeout after the destination records an effect. Deliver completion events twice. Advance a fake clock past the approval expiry.
+After the fixes, all 16 artifact downloads kept identical hashes across a full runtime replacement — what a user made before a deploy is still byte-for-byte what they get after it.
 
-For each scenario, define both the backend invariant and the visible user outcome. “No duplicate action” is not enough if the UI falsely says the action definitely failed. Correct uncertainty is part of the product's correctness.
+We also found a bug in the *evaluation's* accounting: the budget settled from the initial stream, but the provider's real cost sometimes arrived later. An audit matched 1,391 call identities. A cost that exceeds its reservation now latches a violation and blocks further admission. An eval harness that misreports spending isn't much of an eval harness.
 
-<ArticleDiagram stem="15-ai-agent-evals-verified-outcomes-failure-tests" alt="Deterministic tests, stateful failure scenarios, and model trials contribute different evidence to a release decision." />
+## What the evaluation didn't measure
 
-## Use task-specific evidence for completion
+It's worth being as clear about this as about the results. These were adaptive sessions with follow-ups, not repeated trials of the same task, so they don't give a reliability distribution. I didn't compute cost per verified completion. Quality scores in our eval records start as `null` and need human review: counting completed runs doesn't tell you whether the answers were good. In our second cycle the full backend suite of 1,709 tests passed, and the same review found a delegated report treating a future-dated daily summary as "today's close". Our notes say plainly that completion status is not a factual-quality pass.
 
-A useful task rubric contains an observable target.
+## Paired benchmarks on frozen inputs
 
-For document analysis, that may be a set of supported claims with citations to authorized evidence. For a chart, it may be the correct dataset, units, aggregation, and published revision. For a browser workflow, it may be a verified page state or an external receipt, not a generated description of the expected page.
+For changes that are supposed to save money, we use a paired benchmark. The harness freezes a saved conversation and every successful source-tool output, keyed by tool name and canonical arguments, with a checksum. It replays two variants — for example, full tool attachment versus grouped, on-demand loading — against identical inputs. If a variant asks for a read that isn't in the frozen set, that's an explicit failure. There's no live fallback to quietly make the comparison unequal. Variants run in counterbalanced order, because whichever goes first warms the cache.
 
-The evaluation harness should retrieve this evidence independently of the final answer. It can then compare the answer against the actual outcome.
+A variant is promoted only if, across several cases, it uses at least 25% less cumulative input, adds no more than 10% median latency, and scores at least 4/5 on human-reviewed factual support and presentation, with no capability lost. Reports never promote anything automatically.
 
-Partial success deserves a defined representation. A task that produced a correct draft but correctly stopped before an unauthorized send is not equivalent to a task that never found the source document. Whether it passes depends on the requested workflow and the policy, not on whether the model sounded apologetic.
+Our grouped tool-loading strategy cut schema bytes by 28% and *increased* total input, because it needed extra calls. It wasn't promoted. That's the harness working. It stopped us shipping an optimisation that only looked like one.
 
-## A judge is an instrument with its own failure modes
+The same idea applies to methodology changes. When we test a revised skill, only the skill body differs between variants. Runs on hypothetical data are marked as not qualified on financial sources, so a nice-looking test result can't be mistaken for a research claim.
 
-Model-based grading can help with open-ended qualities such as relevance, clarity, and whether an explanation addresses the question. It should not decide every invariant.
+## The rule I'd keep
 
-Use deterministic checks for exact values, access decisions, artifact existence, schema validity, and required evidence where possible. Use bounded rubrics for judgment-heavy dimensions. Calibrate the grader against human-reviewed examples, including plausible but wrong answers.
+For our research delivery gate, there's one line I'd put above everything else: no event is fabricated to turn a true negative into a send. If a workflow couldn't verify its universe, or a source was stale or incomplete, the report is held back and the inbox says why — `universe_coverage_unverified`, `source_publication_stale_or_future`, `source_pagination_incomplete`. One submission and one correction per attempt, then it stops.
 
-Hide irrelevant provider labels from the judge where feasible. Vary answer order in comparisons. Include examples where verbose, confident prose should lose to a shorter, correct result.
-
-When the judge and a deterministic check disagree, do not average away the problem. Investigate which property each measured. A beautiful explanation of a nonexistent artifact should not receive a passing aggregate score because the writing was strong.
-
-## Reliability is a distribution, not one successful replay
-
-A task that passes once may fail on another trial because of model sampling, scheduling, or external timing.
-
-Run repeated trials where that variability matters and report the conditions. Keep the number of attempts, model configuration, tool versions, and task set visible. A pass rate without its sample size and trial definition is hard to interpret.
-
-Separate first-attempt success from success after repair. Both can be useful, but they have different latency and cost implications. Also track failures that are safe and recoverable separately from failures that violate an authority or data-isolation invariant.
-
-A rare safety violation should not disappear inside an average quality score. Some conditions are release gates, not weighted preferences.
-
-## Optimize cost per verified completion
-
-Tokens per request can fall while the system becomes less useful. A shorter context may omit evidence, cause retries, or send the agent down a longer tool path.
-
-A more decision-useful measure is the total cost of the evaluated workload divided by verified successful tasks, alongside the failure breakdown. Include model calls, relevant execution costs, repairs, and abandoned attempts within a clearly stated accounting scope.
-
-Do not hide expensive failures by calculating cost only for the successful subset. Also do not let a single aggregate conceal different workload classes. A simple document lookup and a multi-step report should have separate views before you combine them.
-
-Track latency in the same spirit. Time to the first token is not time to a usable result. For agent workflows, the latter is often the number the user actually cares about.
-
-## Keep the dataset useful without leaking private work
-
-Build synthetic fixtures that preserve the failure shape rather than copying customer documents or production traces into an evaluation repository.
-
-A stale-approval test needs a resource that changes between review and dispatch. It does not need a real customer's contract. A context test needs conflicting instructions and evidence boundaries. It does not need a confidential conversation.
-
-Separate development examples from held-out evaluation tasks. Record fixture provenance and revisions. When a failure becomes a regression case, avoid tuning only to its wording; add variations that preserve the underlying difficulty.
-
-Do not automatically turn every user interaction into training or evaluation material. Access, consent, retention, and the intended data use still apply.
-
-## Compare models through supported workflows
-
-A provider swap should trigger a capability-oriented regression suite, not just a syntax check on the API adapter.
-
-Test structured output, tool-call sequencing, context projection, refusal behavior, repair, cancellation handling, and the application's interpretation of usage data. A model that excels at analysis may still require a different workflow for reliable artifact editing.
-
-Use explicit support levels: supported, supported with a constrained path, or unsupported. A fallback that removes an approval requirement to keep the task running is not graceful degradation.
-
-Pin the configuration used in each evaluation record. “The model got worse” is not a useful diagnosis when the prompt, tool catalog, compaction rule, and renderer changed at the same time.
-
-## A release report should explain the decision
-
-The final artifact of evaluation should be a short, inspectable release record: what changed, what was tested, where performance improved, which failures remain, and why the release is acceptable.
-
-That record is more valuable than a dashboard full of green averages nobody can explain.
-
-The goal is not to prove the agent will never fail. It is to make the important failure modes concrete, keep unacceptable ones from being normalized, and know whether the next change actually made the system better.
-
-A demo shows what the agent can do. An evaluation system shows what you are prepared to claim it can do reliably.
-
-### Technical notes
-
-[1] Anthropic, [Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents). The test scenarios and release framework in this article are proposed application practices, not reported benchmark results.
-
-
-## Continue reading
-
-[Deterministic Infrastructure for AI Agents: Make Every Action Accountable](/blog/architecting-deterministic-infrastructure/) · [Agent Context Compaction: Treat Summaries as Checkpoints](/blog/agent-context-compaction-checkpoints/)
+An agent that sometimes says "I couldn't verify this" is more useful than one that never does. The evaluation's job is to make sure that when it says it did verify something, it did.

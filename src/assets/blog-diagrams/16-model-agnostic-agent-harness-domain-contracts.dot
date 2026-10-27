@@ -1,20 +1,16 @@
-digraph design {
-graph [rankdir=TB, bgcolor="#f6f4ee", pad="0.32", nodesep="0.42", ranksep="0.55", splines=polyline, fontname="DejaVu Sans", fontsize=18];
-node [shape=box, style="rounded,filled", fillcolor="#ffffff", color="#b9c8c4", penwidth=1.3, fontname="DejaVu Sans", fontsize=17, margin="0.20,0.16"];
-edge [color="#58736e", fontname="DejaVu Sans", fontsize=12, arrowsize=0.7, penwidth=1.4];
-providers [label="Provider adapters\ncapabilities + raw usage",fillcolor="#16352f",fontcolor="#ffffff",color="#16352f"];
-harness [label="Harness core\nidentity + state + policy"];
-domain [label="Domain contracts\nunits + rules + evidence"];
-tools [label="Authorized tools\n+ isolated execution"];
-artifacts [label="Verified artifacts\n+ explicit outcomes"];
-eval [label="Workflow-level evals\napproved support matrix"];
-providers -> harness [label="normalized requests"];
-domain -> harness [label="meaning + constraints"];
-harness -> tools [label="approved actions"];
-tools -> artifacts [label="results"];
-artifacts -> eval [label="verify"];
-eval -> providers [label="supported profiles",style=dashed,constraint=false];
-{rank=same; providers; domain;}
-{rank=same; harness; tools;}
-{rank=same; artifacts; eval;}
+digraph harness {
+rankdir=TB;
+loop [label="agent loop\nAgents SDK"];
+wrap [label="harness wrappers\npermissions · retries · scope"];
+gate [label="dispatch gate\ncapabilities ∩ policy\nrefuse, never fall back", class="key"];
+client [label="OpenAI-compatible\nclient"];
+or [label="OpenRouter"];
+an [label="Anthropic"];
+self [label="self-hosted\nendpoint"];
+dom [label="domain validators\nbindings · delivery gate"];
+loop -> wrap -> gate -> client;
+client -> or;
+client -> an;
+client -> self;
+wrap -> dom [label="tool results", style=dashed];
 }

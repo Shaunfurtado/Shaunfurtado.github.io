@@ -11,8 +11,20 @@ interface Props {
 const { stem, alt } = Astro.props;
 if (!/^[a-z0-9-]+$/.test(stem)) throw new Error(`Invalid diagram source: ${stem}`);
 
-const dot = readFileSync(join(process.cwd(), 'src/assets/blog-diagrams', `${stem}.dot`), 'utf8');
+// Diagram sources only describe structure. Layout defaults live here and colour
+// lives in global.css, so every figure follows the site theme (light and dark).
+// Helvetica/Courier are used for Graphviz's text metrics; CSS swaps in Inter and
+// JetBrains Mono, which have close enough widths for the boxes to fit.
+const defaults = [
+  'graph [bgcolor="transparent", pad="0.2", nodesep="0.35", ranksep="0.4", fontname="Courier", fontsize=13, labeljust="l"];',
+  'node [shape=box, style="rounded", fontname="Helvetica", fontsize=16, margin="0.18,0.1", penwidth=1.2];',
+  'edge [fontname="Courier", fontsize=13, arrowsize=0.6, penwidth=1.2];',
+].join('\n');
+
+const source = readFileSync(join(process.cwd(), 'src/assets/blog-diagrams', `${stem}.dot`), 'utf8');
+const dot = source.replace('{', `{\n${defaults}\n`);
 const viz = await instance();
+// Keep Graphviz's natural size so small diagrams aren't blown up; CSS caps the width.
 const svg = viz.renderString(dot, { format: 'svg', engine: 'dot' })
   .replace('<svg ', '<svg aria-hidden="true" focusable="false" ');
 ---

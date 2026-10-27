@@ -1,7 +1,6 @@
 ---
-title: 'Skills and Adaptive Tool Visibility: Discovery Is Not Permission'
-description: Design skill-based agents with progressive tool discovery, versioned
-  procedures, stable tool profiles, and authorization that is independent of visibility.
+title: Hundreds of Tools, One Agent — How Ananta Decides What the Model Sees
+description: How our agent handles 126 native tools plus MCP servers, client connectors, and extensions — a permission filter, nine route profiles, on-demand capability loading, a guard on every call, and an experiment where loading less cost more.
 pubDate: '2026-12-08'
 tags:
 - ai-agents
@@ -12,141 +11,77 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/skills-adaptive-tool-visibility-agent-authorization/
-heroImage: /blog-assets/covers/11-skills-adaptive-tool-visibility-agent-authorization.png
-heroImageAlt: 'Discovery is not permission — Skills and Adaptive Tool Visibility:
-  Discovery Is Not Permission; an editorial diagram cover by Shaun Furtado.'
-seoTitle: Adaptive Tool Visibility and Skill-Based AI Agents
+seoTitle: 'Tool Visibility for AI Agents: Routes, Capability Loading, and Permissions'
 series: Systems in Practice
 articleId: 11
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
+Ananta's agent has 126 native tools: 29 for building alert workflows, 26 for broker data, 19 for the workspace canvas, 18 for the browser, 8 for the sandbox, and a long tail. On top of those come market-data operations from MCP servers (one exchange MCP server alone exposes 36 tools), connectors built for a specific client's own systems, and calculator extensions. Depending on the deployment, that's well into the hundreds.
 
-A model does not need every tool definition your application owns on every turn.
+Sending all of them on every call is expensive and confusing for the model. Sending only a few makes the agent helpless at the first unexpected question. Here's how we handle it, and what measuring it taught me.
 
-A question about a document should not necessarily arrive with schemas for account administration, report publishing, browser control, scheduling, and every experimental integration added during development.
+## Layer one: permissions decide what exists
 
-The obvious response is dynamic tool selection. The less obvious requirement is keeping that selection separate from authorization.
-
-For **skill-based agents and adaptive tool visibility**, I use three distinct concepts: what the agent knows exists, what it currently sees in detail, and what it is permitted to execute.
-
-## A skill is a procedure with a version
-
-A skill can describe how to perform a recurring class of work: compare documents, inspect a dataset, build a chart, or verify a claim against evidence.
-
-It can include instructions, examples, prerequisites, suggested tools, and output expectations. It should also have a version and a review history. Otherwise, a small edit to a shared instruction file can change many workflows without leaving a clear explanation.
-
-The skill is not a security grant. “Use the publishing tool” in a skill document does not authorize the current user to publish the current artifact.
-
-I would store the skill's identity and version in the run record. Reproducing a failure then means reconstructing the instruction that actually ran, not reading whatever the skill contains today.
-
-## Load detail progressively
-
-A useful catalog entry can be short: name, purpose, input expectations, and the situations in which the skill is useful. The agent loads the full procedure when it chooses to use it.
-
-Tool definitions can follow a similar pattern. A small stable core provides discovery and basic task control. Task profiles attach a bounded set of schemas. Additional tools can be discovered when the task genuinely needs them.
-
-Anthropic's advanced-tool-use discussion describes tool discovery as a way to avoid loading large catalogs indiscriminately.[1] The application-level lesson is broader than any particular provider feature: discovery and execution should be separate interfaces with separate budgets.
-
-A tool discovery result should identify approved registry entries. It should not be executable code or an arbitrary function path that the model can submit directly to a worker.
-
-## Selection is a relevance problem
-
-A selector can use explicit task type, skill metadata, lexical matching, embeddings, or a combination. Each has failure modes.
-
-A keyword rule can confuse “delete the word schedule from this draft” with a request to modify a scheduled job. Semantic similarity can retrieve a broadly related tool that does not support the required operation. A model-based router can misunderstand the task or generate a nonexistent capability name.
-
-Validate every selected identifier against the registry. Preserve a fallback discovery path so a mistaken initial selection does not make the task impossible. Avoid silently attaching the entire catalog when selection is uncertain; that hides the failure and defeats the original goal.
-
-The selector's objective is to make the right tools easy to choose. It is not to establish permission.
-
-## Authorization is a separate intersection
-
-For a requested operation, effective authority should reflect current identity, task scope, resource access, policy, and runtime availability.
-
-A simplified pure function illustrates the set relationship:
+Before any routing, the tool list is filtered by the user's role. Required permissions come from the tool's name prefix — a deliberately simple scheme you can read in one function:
 
 ```python
-def effective_capabilities(
-    requested: set[str],
-    delegated: set[str],
-    authorized: set[str],
-    available: set[str],
-) -> set[str]:
-    return requested & delegated & authorized & available
+tool_permissions("web_fetch")         # {"chat.use", "research.web"}
+tool_permissions("sandbox_run_python") # {"chat.use", "analysis.sandbox"}
+tool_permissions("broker_get_quotes")  # {"chat.use", "market.view",
+                                       #  "broker.view", "broker.use_data"}
+tool_permissions("subagent_run")       # {"chat.use", "research.deep"}
 ```
 
-This is not a complete authorization engine. Real policy can depend on arguments, resource versions, risk class, approval state, and time. The point is that relevance does not expand authority, and an empty allowed set remains empty.
+Alert-writing tools need `alerts.manage`. Anything that exports or shares needs `chat.share`. A tool the user can't use is removed before routing and before discovery. The model never sees it and can't search for it. The system prompt also gets a short note about what's restricted, telling the model not to promise, simulate, delegate, or work around those capabilities.
 
-The executor must perform the current check. The model may still remember a tool definition after permission has been revoked. Hiding it from the next prompt does not revoke an in-flight call.
+The trade-off is that prefixes make rules easy to read and also easy to forget: a new tool has to be named into the right family, and that's something review has to catch.
 
-<ArticleDiagram stem="11-skills-adaptive-tool-visibility-agent-authorization" alt="Skill discovery and tool selection improve relevance; a separate execution gate checks authority before dispatch." />
+## Layer two: a route picks a stable profile
 
-**A tool that is invisible is not necessarily inaccessible. A tool that is visible is not necessarily authorized.**
+Tool profiles are on by default. Each run is classified into one of nine routes: simple chat, market read, alert workflow, saved workflow, browser read, browser research child, artifact builder, workspace editor, and deep research parent. Each route has a fixed set of tools. On top of that sits a stable core of ten control tools that every parent run gets: `ask_user`, `present_chat_block`, `skill_catalog`, `skill_load`, `session_search`, `session_expand`, the plan tools, and `extension_propose`.
 
-Conflating those statements is a common way to build a prompt-shaped permission system.
+Routes add to that rather than replace it: tool hints from a loaded skill, the full catalogue of a market-data MCP server (never a hand-picked subset — partial MCP catalogues confused the model more than they helped), lexically related tools (top six above a similarity floor), and any extensions the user mentioned by name. Every run emits a `tool_profile_selected` event listing exactly what was attached and why.
 
-## Stable profiles can reduce churn
+Routes go wrong in boring ways. "Looks good, turn it on" after building an alert was routed to simple chat with no tools. The agent then searched for and reloaded the same alert tools on every follow-up — about a quarter of all tokens in the alert-authoring chats we traced. Now an active alert-building session keeps its route. Separately, "include their earnings as well" after an answer-only question lost its market tools, because answer-only defaulted to simple chat. The default is now market read.
 
-Dynamic selection does not have to mean rebuilding every schema list from scratch on every turn.
+## Layer three: load what's missing, on demand
 
-A few versioned profiles can cover common workflows. Keep their order and definitions stable. Add a small number of discovered capabilities when necessary. This can simplify debugging and make request assembly more predictable.
+When a route doesn't have what's needed, the agent has four capability tools: search, load, list groups, and load group. Search returns at most eight results with 220-character summaries. Load takes up to eight exact names and is all-or-nothing.
 
-The trade-off is between minimal input and selection overhead. An extremely narrow profile may force repeated discovery calls. An extremely broad one may overwhelm tool choice. Measure both tool-selection quality and end-to-end task cost.
+```python
+def capability_load(names: list[str]) -> dict:
+    if len(names) > 8 or any(n not in run_inventory for n in names):
+        return {"code": "capability_unavailable", "retry": False,
+                "note": "Not in this run's authorized inventory. Do not retry."}
+    attach(names)
+    return {"note": "Available on the next model step. Nothing was executed."}
+```
 
-A profile can also be a useful review artifact. An engineer can inspect what a “document analysis” task will normally see without tracing a large collection of ad hoc conditions.
+The inventory is per run, immutable, already filtered by permissions, and versioned by a hash. A load against a stale version gets `catalog_version_changed`. Loaded tools attach on the *next* model step and are appended to the end of the list, never re-sorted, for reasons covered in [the prompt caching post](/blog/prompt-caching-ai-agents-prefix-cache-hit-rate/). Loaded names are saved in run metadata, so a resumed run gets the same tools back. For self-hosted models with small windows, a schema budget evicts older tools, and if even the requested tools don't fit, the agent is told so.
 
-Profiles remain suggestions to the model, not permission bundles that bypass current resource checks.
+The tool messages say "loading is discovery, never execution" more than once. Models do sometimes believe that loading a tool did the thing.
 
-## Tool descriptions are interfaces
+<ArticleDiagram stem="11-skills-adaptive-tool-visibility-agent-authorization" alt="Fig. 1 — Permissions filter the full catalogue into a run inventory. A route picks a stable profile, and the model can load more from that same inventory. Every call goes through a guard that re-checks permissions on the arguments and again on the output." />
 
-A tool's name, description, arguments, and result shape influence how the model uses it.
+## The guard on every call
 
-Describe the operation precisely. Say whether it reads or writes, what resources it expects, how failure is reported, and whether the result is a snapshot. Avoid ambiguous names such as `manage_item` when the actual operation is `archive_report`.
+Visibility doesn't grant anything. Every tool is wrapped, and the wrapper re-reads membership fresh — there's no process-wide permission cache — before running it. If the user's workspace access changed since the tools were attached, the call is refused. It checks file and resource provenance, information-barrier rules on any workflow, session, or run being read, and whether the arguments mention a restricted security.
 
-Return structured failures that the agent can act on: missing permission, unavailable runtime, invalid version, required approval, or source not found. A generic string saying “something went wrong” invites guessing.
+Then it checks the *output* too. A broad search can return a restricted company without anyone having named it. If a desk is walled off from a security, the result is refused before the model sees it. No skill and no capability load grants access to anything. They only decide what's convenient to reach.
 
-The Model Context Protocol tools specification defines schema-based interfaces and discusses security considerations, including validation and human control.[2] A protocol-compatible schema is still only one layer of the application contract.
+## Skills are procedures, versioned and reviewed
 
-A syntactically valid call can be unauthorized. A successful transport response can contain a failed operation. Make those distinctions visible.
+There are 23 shipped skills: markdown files with a name, a "use when / don't use when" description, a version, tool hints, keyword triggers, and optionally a spawn block for delegation. The skill catalogue in the prompt is capped at 2,000 characters, a loaded skill body at 12,000, and at most four skills auto-load from triggers. Skill bodies go at the end of the model input, after the conversation, to keep the cached prefix stable.
 
-## Skills can become a supply-chain problem
+Skills can be improved, carefully. In our October evaluation the model activated a skill override when the user had only asked for a draft. Proposals now stay inactive until a person activates them. Later we added an opt-in where the owner can let independently reviewed revisions apply automatically — but only to allowlisted methodology skills, and never to tool hints, triggers, or delegation settings. The approval is bound to a fingerprint of the revision and hashes of the paired test outputs. Edit the revision and the approval is gone.
 
-A shared skill may include instructions, references, and executable helpers. That makes installation and updates consequential.
+## The experiment where loading less cost more
 
-Treat external skill content as untrusted until reviewed. Do not let retrieved documents overwrite active procedures. Pin versions, identify dependencies, and define which capabilities a skill can request. Executable helpers need the same review and isolation appropriate to any other code.
+The obvious next step was to make deferred loading the default: attach a small core and let the agent load the rest. We tested it properly, on frozen inputs, with the same conversation replayed against two strategies.
 
-Automatic improvement should produce a proposal, not silently rewrite the active skill because a model found a more convincing sentence. Evaluate the candidate on representative tasks, review the diff, and preserve rollback to a known version.
+Deferred loading cut serialised schema bytes by 28%, from about 217 KB to 157 KB. But the full strategy used 73,598 input tokens across 2 calls in 49 seconds. Deferred used 74,415 tokens across 4 calls in 61 seconds. The extra round trips to discover and load tools cost more than the smaller schemas saved — and in an earlier run, selective loading had halved our cache coverage before we fixed the tool ordering.
 
-A feedback loop that changes instructions without controlled activation is not necessarily learning. It may be an unreviewed deployment mechanism.
+So nothing was promoted. Production attaches the full tool set for the selected route, in a stable order, and capability loading is the escape hatch rather than the main path. Route profiles do most of the work. We also tried embedding-based tool retrieval and removed it: worker processes start fresh, so loading the embedding model on each worker's first tool call cost more memory and startup time than the retrieval was worth. Related-tool matching is lexical now.
 
-## Measure the misses you do not see
-
-Tool selection can look efficient because the prompt is smaller while task quality quietly declines.
-
-Build fixtures that require a rarely used capability, a sequence spanning two profiles, and a task whose wording contains a misleading keyword. Include cases where no tool should be used at all.
-
-Measure whether the necessary capability becomes available, how many discovery steps are needed, whether the model chooses an incorrect tool, and whether unauthorized attempts are rejected. Track schema volume, but do not make token reduction the only success metric.
-
-For skills, test version changes against old tasks as well as new ones. A procedure optimized for one successful demonstration can damage a different workflow that depended on the previous instruction.
-
-## The experience should remain legible
-
-Progressive disclosure is not only for the model. It can help the user understand what is happening.
-
-A task can show which skill is active, why another capability is being requested, and whether an action needs approval. This is more useful than exposing a giant raw tool log or presenting the agent as an unknowable sequence of decisions.
-
-Keep the language ordinary. “Loading the document comparison procedure” is clearer than announcing a complex internal routing mechanism. The user needs the relevant state, not every implementation detail.
-
-The architecture is doing its job when the model sees enough to act competently, the executor remains in control of authority, and the user can understand the important transitions.
-
-## Technical notes
-
-[1] [Anthropic: advanced tool use and tool discovery](https://www.anthropic.com/engineering/advanced-tool-use).
-
-[2] [Model Context Protocol: tools specification](https://modelcontextprotocol.io/specification/2025-06-18/server/tools).
-
-
-## Continue reading
-
-[Context Engineering for AI Agents: Build a Working View, Not a Bigger Transcript](/blog/context-engineering-ai-agents-working-state/) · [Prompt Caching for AI Agents: Optimize the Prefix, Not the Dashboard](/blog/prompt-caching-ai-agents-prefix-cache-hit-rate/)
+The lesson I keep coming back to: the number to optimise is input per *completed task*, not bytes per request. The two moved in opposite directions.

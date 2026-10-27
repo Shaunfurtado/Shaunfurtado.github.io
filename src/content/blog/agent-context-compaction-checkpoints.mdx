@@ -1,8 +1,6 @@
 ---
-title: 'Agent Context Compaction: Treat Summaries as Checkpoints'
-description: Build safer agent context compaction with validated summaries, explicit
-  history coverage, atomic checkpoint commits, and recovery that never drops history
-  silently.
+title: Compaction in a Long-Running Agent Chat — The Trade-Offs We Actually Made
+description: When our agent summarises a conversation, what triggers it, which model writes it, what the summary may contain, why we chose availability over completeness, and how session search makes that choice survivable.
 pubDate: '2026-12-01'
 tags:
 - ai-agents
@@ -13,158 +11,76 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/agent-context-compaction-checkpoints/
-heroImage: /blog-assets/covers/09-agent-context-compaction-checkpoints.png
-heroImageAlt: 'Summaries are checkpoints — Agent Context Compaction: Treat Summaries
-  as Checkpoints; an editorial diagram cover by Shaun Furtado.'
-seoTitle: Agent Context Compaction as a Checkpoint
+seoTitle: 'Agent Context Compaction: Triggers, Summaries, and Session Recall'
 series: Systems in Practice
 articleId: 9
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
+Analysts keep Ananta chats open for days. One conversation might cover a results season: pull quarterly numbers for five companies, compare margins, build a canvas, set an alert, come back two days later and ask "what did we conclude about the second one?"
 
-A summary can read beautifully and still be a bad checkpoint.
+Until September our answer to long chats was a blunt cap: the last 20 turns, text only. It was predictable, and it forgot exactly the things people came back for. This post is about what replaced it, including one place where I deliberately chose the less safe option.
 
-Suppose an agent spends forty minutes comparing options. The user changes a constraint, a source contradicts an earlier estimate, and one proposed action remains unapproved. The context grows large, so a summarizer compresses the conversation into six fluent paragraphs.
+## When compaction runs
 
-The summary preserves the main conclusion. It drops the exception, softens the contradiction, and describes the proposed action as part of the plan. The next model invocation has less text and a worse understanding of what it is allowed to do.
+Budgets are in characters, not tokens, with a rough four-characters-per-token estimate for reporting. It's an approximation and the code says so. The defaults:
 
-For **agent context compaction**, readability is not the primary acceptance test. Recoverability is.
-
-## Define what compaction is allowed to lose
-
-Some history is expendable. Repeated navigation messages, verbose formatting, and superseded intermediate calculations may no longer matter to the next step.
-
-Other state is not expendable: active user constraints, unresolved blockers, authorization status, evidence supporting a consequential claim, and the exact identity of an artifact the user approved.
-
-I would keep those critical items in explicit task state where possible. A summary can refer to them, but it should not be their only surviving representation.
-
-This turns compaction from “shorten the transcript” into a more precise operation: replace a portion of the model-facing trajectory with a smaller representation while preserving the ability to continue the task correctly.
-
-The durable evidence record is not deleted just because it is no longer in the prompt. Retention and access policies still apply, but context pressure alone should not rewrite history.
-
-## A checkpoint needs a coverage boundary
-
-A summary should say which events it covers.
-
-Without that boundary, the next context builder cannot distinguish already-compacted history from new evidence. It can duplicate events, skip them, or summarize a previous summary repeatedly while losing the connection to original inputs.
-
-A compact checkpoint record might contain:
-
-```json
-{
-  "checkpoint_id": "checkpoint_12",
-  "covers_through_event": 318,
-  "schema_version": 2,
-  "projector_version": "context-v5",
-  "summary": {
-    "accepted_decisions": [],
-    "open_questions": ["Confirm the required delivery date."],
-    "evidence_refs": ["ev_27", "ev_61"],
-    "pending_action_refs": ["action_9"]
-  }
-}
+```python
+MODEL_INPUT_CHAR_BUDGET = 120_000
+COMPACT_RESERVE_CHARS = 12_000
+COMPACT_KEEP_RECENT_CHARS = 20_000
+COMPACT_SUMMARY_MAX_CHARS = 3_500
+COMPACT_ANXIETY_RATIO = 0.80
 ```
 
-The empty decision list is valid. The summarizer should not invent a decision to make the structure look complete.
+Compaction triggers at 80% of the budget minus the reserve — before the window is full, not when it overflows. The projection includes the context hooks and status bar, since those count too. For self-hosted models the budget comes from the model's declared context window, minus reserved output, instructions, and the estimated size of the tool schemas.
 
-The coverage boundary identifies input history, not proof that every important fact survived. Validation still needs to check the resulting representation and preserve critical state outside the summary.
+## What it does
 
-## Generate first, commit second
+1. **Keep recent turns raw.** Walk backwards from the newest turn and keep whole turns — user message, assistant reply, and tool digest together — until 20,000 characters are used. The cut always lands on a turn boundary, never inside one.
+2. **Clear older tool output.** Older tool digests are replaced with a placeholder telling the model that prior tool results were cleared and that `session_search` and `session_expand` can bring them back.
+3. **Summarise the middle.** A cheap model writes a structured summary of everything older than the recent window, with the previous summary passed in to be merged rather than rewritten from scratch.
 
-Compaction is a state transition. Treat it like one.
+The summariser prompt has fixed sections — Symbols, Facts, Numbers, URLs, Canvases, Blockers, Open threads — and a few hard rules: list only facts present in the source; never invent prices, ratios, holdings, URLs, or canvas ids; never include keys, tokens, or OTP codes. The output then goes through a regex pass that redacts anything shaped like a key, in case the rule didn't hold. Temperature is 0.1, and input to the summariser is capped at 48,000 characters.
 
-Read a consistent source range. Generate a candidate summary. Validate its shape and required references. Record the summary and its coverage boundary atomically. Only then build future context from the new checkpoint plus the uncovered tail.
+The summary is stored on the session row with the id of the first run it didn't cover. It's prefixed with a marker saying it's a compressed summary not shown to the user. Audit events and the search index are never touched — compaction changes what the model sees, not what the system remembers.
 
-<ArticleDiagram stem="09-agent-context-compaction-checkpoints" alt="A candidate checkpoint is generated and validated before an atomic commit; failure keeps the previous boundary and uncovered history." />
+<ArticleDiagram stem="09-agent-context-compaction-checkpoints" alt="Fig. 1 — Under the threshold, the stored summary is reused. Over it, a policy-approved cheap model merges older turns into a new summary. If that fails, the run continues on the frozen summary or drops the oldest turns. The audit log and search index are never compacted." />
 
-If another event arrives during generation, it remains beyond the checkpoint boundary and belongs in the tail. Do not silently mark it covered because the summarizer finished later in wall-clock time.
+## Which model writes the summary
 
-If two compaction attempts race, use a version check or equivalent atomic rule so an older candidate cannot overwrite a newer accepted checkpoint.
+The summariser is chosen in order: an explicitly configured compaction model; otherwise an allowed model whose name suggests it's small (flash, mini, haiku, lite, and so on); otherwise the chat model itself.
 
-The database operation is often simpler than the language-model operation. It is also the part that determines whether a restart can reconstruct the intended context.
+Every candidate has to pass the same inference policy check as a normal chat call. That closed a review finding in October. If a workspace is set to keep confidential content on self-hosted models, compaction mustn't be the side door that sends a summary of that content to a cloud model just because it's cheaper. A summary of confidential material is still confidential material.
 
-## An empty summary must not advance history
+## The choice I made differently from the textbook
 
-This is the failure case I would test first.
+The textbook answer — I wrote a version of it myself in an earlier draft of this post — is that a failed or empty summary should never advance history. If you can't summarise the older turns, you shouldn't drop them.
 
-A summarizer times out or returns empty content. The application catches the exception, preserves the previous summary, and advances the “covered through” marker anyway. It looks resilient because the chat did not fail. In reality, some history has disappeared from the model's recoverable view.
+Ananta does drop them. If the summariser returns nothing and a previous summary exists, we keep the frozen previous summary and still move the recent window forward. If the summariser throws, we use the frozen summary plus recent turns. With no previous summary, we drop the oldest turns until things fit, and record `fallback: drop_oldest` in the audit log. In each case, turns between the old summary and the new recent window disappear from the model's view.
 
-The safe fallback preserves both the previous checkpoint and its original boundary. Newly uncovered events must remain available to the next context construction.
+We chose that because the alternative is worse for the person using it. A summariser timeout (we allow 45 seconds) would otherwise fail their chat turn, or leave every future turn too large to send. Compaction never fails a run. It's lossy, the run proceeds, and the loss is recoverable because nothing is deleted — the agent can search for what fell out.
 
-When there is no room for all of them, the system has to make an explicit choice: retrieve selectively, postpone a nonessential operation, switch to a documented reduced mode, or pause because it cannot safely continue. Silently discarding an active constraint is not graceful degradation.
+I'm comfortable with that trade because of the next section. Without it, I wouldn't be.
 
-**A compaction fallback is successful only when it preserves the meaning of “what we still know.”**
+## Recall is the other half
 
-Keeping the interface responsive is not enough.
+Two tools let the agent reach back into history: `session_search` and `session_expand`. Search uses SQLite FTS5, or a search table on Postgres, with optional hybrid retrieval that fuses a small embedding model's results with full-text results using reciprocal rank fusion. Embeddings are off by default. If they fail, search falls back to full text alone.
 
-## Compact at semantic boundaries
+The defaults are lean on purpose. Search returns five hit cards with no surrounding context. Expanding a hit allows a radius of at most eight events and 6,000 characters. Each indexed event is capped at 4,000 characters, with secrets stripped before indexing. The tool's description tells the agent to expand at most twice per turn, and to re-fetch the original source if the result is still truncated.
 
-A raw character cutoff can split a tool call from its result, a question from its answer, or a user correction from the statement it supersedes.
+The first version of recall wasn't good. Search windows came back full of `[response_completed]` placeholders, and queries matched bare `run_started` events. We changed the default window to zero, made expand return only evidence-bearing events, ranked hits from the current run lower, and added stop words to the full-text index. Search also stays in its lane: this chat, or one explicitly named session the user owns. Results say that zero hits don't prove something isn't in another session.
 
-Prefer complete interaction groups or task events. Preserve the message relationships required by the provider adapter. Do not place a summary in a position that makes quoted source text appear to be a new high-priority instruction.
+One more thing came out of the design discussion: summary facts are *weak evidence*. If a number from the summary is going into the current answer, the agent is expected to expand the original or fetch it again. A summary is a pointer to where to look, not a source to quote.
 
-For a current in-flight operation, the latest tool exchange may deserve to remain intact until the next step completes. Older completed segments are easier to compact safely.
+## Not every run should see history
 
-This is a reason to model the trajectory structurally rather than storing it as one large string. Compaction should understand enough about the boundaries to avoid tearing through them.
+The worst compaction-related bug we had wasn't about compaction quality. In early October a scheduled analysis overstated a block trade, because scheduled runs were inheriting older conversation answers and workflow-editing chatter through history and its summary. The run was mixing what someone had discussed with what the data said.
 
-## Structured does not mean verified
+Scheduled and alert-triggered runs now execute with no prior turns at all. On that workflow, context went from 12 turns, 197 tool projections, and about 154,000 characters to zero turns and about 36,000 characters. Cost dropped too, though that wasn't a controlled comparison and I don't quote it as one. A few days later we found workflow compaction had dropped a workflow's active period, so the agent missed which days it was eligible to run. Schedule, calendar eligibility, and delivery policy are now kept separately from the large targeting payload, so they survive even when that payload is trimmed.
 
-A JSON object with a `facts` field can still contain false facts.
+## What I'd still change
 
-Schema validation can establish that a list exists and references have the expected format. It cannot establish that a source supports the statement, that a number has the right unit, or that a user actually approved the action.
+Coverage could be tighter. Under the threshold, the stored summary is prepended to the normal recent history, and depending on where the last compaction landed, the two can overlap a little. It costs a few characters, not correctness. We also count characters instead of tokens, which is fine for one provider and loose for others.
 
-I would separate extracted observations from inferred conclusions. Preserve source references for numerical claims. Keep contradictions visible rather than asking the summarizer to resolve them for the sake of a tidy narrative.
-
-For critical constraints, compare the candidate checkpoint against durable task state. A summary that says an action is approved should be corrected or rejected when the approval ledger says pending. The summary does not get to promote itself into authority.
-
-This is also where a smaller or cheaper summarization model needs evaluation. Its lower cost is useful only if the task's important distinctions survive.
-
-## Reuse a checkpoint until something justifies changing it
-
-Regenerating a summary at every turn can create semantic drift and avoidable request churn.
-
-An accepted checkpoint can remain stable while new events accumulate in a recent tail. When the tail grows beyond the chosen budget, the system can compact another completed segment or create a new checkpoint over an explicitly defined range.
-
-Hierarchical summaries can help with long histories, but every extra summarization layer risks losing detail. Maintain routes to original evidence, not only a chain of summaries of summaries.
-
-Anthropic's context-engineering guidance discusses compaction and structured note-taking as approaches to long-running tasks.[1] My design preference is to pair those language-level techniques with transactional checkpoint metadata. That is what makes failure and resumption explainable.
-
-## Retrieval is the other half of compression
-
-A compact representation can omit detail safely only when the system can recover that detail when needed.
-
-Give evidence a stable, authorized retrieval path. A question about an exact number should retrieve the source result or relevant passage rather than ask the model to reconstruct it from a vague sentence in the checkpoint.
-
-Retrieval should be bounded and scoped. Returning the entire old conversation every time a summary is insufficient defeats the context budget. Returning a small passage without enough surrounding context can also mislead. The right interface supports focused search and controlled expansion.
-
-A retrieval failure should be visible. “The source is no longer available” is different from “the source confirms the claim.”
-
-## Measure continuation quality
-
-A summary quality score alone is not enough. Evaluate what the agent does after compaction.
-
-Use tasks where the important constraint is old, where a recent instruction supersedes an earlier one, where two sources disagree, and where approval remains pending. Compare continuation behavior before and after compaction under the same fixture.
-
-Measure retrieval success for exact facts, preservation of constraints, unsupported claims, invalid action attempts, and the cost of rebuilding context. Also test summary-generation failure, duplicate compaction attempts, and a restart between candidate generation and commit.
-
-The desired result is not identical prose. It is equivalent task-relevant state and safe continuation.
-
-## A smaller context is useful only when it is still the right context
-
-There is a temptation to celebrate compression ratios: ten times smaller, twenty times smaller, an entire session in a paragraph.
-
-A paragraph that loses the pending approval is not a better representation. A longer checkpoint with clear evidence references may be the cheaper choice once you account for recovery, repeated work, and mistakes.
-
-Compaction should spend detail carefully, not destroy it indiscriminately.
-
-The real achievement is being able to pause a complicated task, resume it under a bounded context window, and still know which facts are supported, which decisions are settled, and which actions have not been authorized.
-
-## Technical notes
-
-[1] [Anthropic: compaction and structured notes in context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents).
-
-
-## Continue reading
-
-[Context Engineering for AI Agents: Build a Working View, Not a Bigger Transcript](/blog/context-engineering-ai-agents-working-state/) · [Prompt Caching for AI Agents: Optimize the Prefix, Not the Dashboard](/blog/prompt-caching-ai-agents-prefix-cache-hit-rate/)
+What I wouldn't change is the split: an audit log that keeps everything, a model view that keeps very little, and a search tool between them. That split is what lets the summariser be imperfect.

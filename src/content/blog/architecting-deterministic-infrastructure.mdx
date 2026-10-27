@@ -1,8 +1,7 @@
 ---
-title: 'Deterministic Infrastructure for AI Agents: Make Every Action Accountable'
-description: Design reliable AI agent infrastructure with explicit action contracts,
-  ownership, idempotency, bounded execution, and honest recovery from unknown outcomes.
-pubDate: '2026-06-20'
+title: The Boring Machinery Behind a Trustworthy AI Agent
+description: What I learned building the execution layer of a self-hosted agent platform — run ownership, fenced leases, app-owned retries, and why an uncertain outcome should become a receipt, never a silent retry.
+pubDate: '2026-10-27'
 tags:
 - ai-agents
 - software-architecture
@@ -12,170 +11,95 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/architecting-deterministic-infrastructure/
-heroImage: /blog-assets/covers/01-architecting-deterministic-infrastructure.png
-heroImageAlt: 'Make every action accountable — Deterministic Infrastructure for AI
-  Agents: Make Every Action Accountable; an editorial diagram cover by Shaun Furtado.'
-seoTitle: 'Deterministic AI Agent Infrastructure: Action Contracts'
+seoTitle: 'Deterministic AI Agent Infrastructure: Ownership, Leases, Receipts'
 series: Systems in Practice
 articleId: 1
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
+For most of this year I've been the main engineer on the enterprise build of Ananta Market Stack, a trading and market-data workspace that we deploy on the client's own server. There's no shared cloud tenant. Each client gets the whole stack — API, frontend, Redis, workers, a code sandbox, an isolated browser plane, and an agent that can use all of it — running under Docker Compose on a machine they control.
 
-The demo ends when the agent clicks the button. The engineering starts when the request times out and nobody knows whether the button worked.
+That constraint shaped almost every decision. When something breaks at 2 a.m. on a client's VPS, there is no platform team and no managed queue to blame. The system has to explain itself, recover without guessing, and refuse to do anything it can't account for.
 
-Consider an agent preparing a supplier comparison. It reads documents, runs a calculation, generates a report, and offers to email the result. Nothing about that workflow sounds especially dangerous. Then a worker restarts after the email provider accepts the message but before the application records success.
+This post is about the unglamorous part: the machinery that decides who owns a run, what happens when a worker dies halfway through, and how we stopped the system from "helpfully" repeating things it shouldn't.
 
-Should the replacement worker send it again?
+## The model never gets to decide infrastructure questions
 
-A better prompt cannot answer that question. The system needs a definition of the action, a durable record of its intent, and a way to reconcile an uncertain outcome. Otherwise, a perfectly reasonable retry becomes a duplicate external write.
+The first rule we wrote down sits in the docstring of our plane supervisor: the model never decides whether containers should be restarted, waited on, or replaced.
 
-That is what I mean by **deterministic infrastructure for AI agents**: not forcing a model to produce identical sentences, but making authority, execution state, and recovery explicit enough that a probabilistic component cannot quietly redefine them.
+It sounds obvious. It isn't, once you have an agent with tools like "run Python" and "open a browser". The tempting design is to let the agent see a failure and retry the tool. Then a sandbox broker hiccup turns into three identical code runs, or a browser that was actually still starting gets a second one stacked on top of it.
 
-## The unit of design is an action, not a conversation
+So every execution plane — sandbox, browser, workers — reports the same small health row (`available`, `runtime`, `reason`, `capabilities`), and recovery is plain code with fixed numbers: three attempts, backoff between 0.35 and 3 seconds, a 20-second readiness timeout, and a circuit that opens after four failures for twenty seconds. When a plane is down, the chat tools fail closed and say so. The agent sees `browser plane unavailable: <reason>`, not a stack trace it might try to reason its way around.
 
-A conversation is a useful interface. It is a poor transaction boundary.
+## Topology follows trust, not team boundaries
 
-“Research these suppliers and send me a recommendation” can contain several operations with different permissions. Reading a public document, executing generated Python, accessing an authenticated account, and sending an email should not inherit one undifferentiated authorization just because they belong to the same chat turn.
+The stack is one Compose file with profiles. The default profile is deliberately tiny: a bootstrap step that generates secrets on first boot, Redis, the backend, and the frontend. Everything with a larger blast radius is opt-in:
 
-I start by separating what the model proposes from what the application permits. The model can suggest an action and supply arguments. The execution layer resolves identity, checks the relevant resource, validates the arguments, applies the current policy, and decides whether to execute, deny, or request approval.
+- `sandbox` adds a sandbox broker and a gVisor bootstrap.
+- `browser` adds a browser broker and a Squid egress proxy.
+- `workers` adds the chat, subagent, workflow, scheduler, and live market-data workers.
 
-This separation makes a useful distinction possible: the agent may understand that an email tool exists without having permission to send this particular email.
+Two details in that file carry more weight than they look like they should. Only the two brokers mount the Docker socket — the backend and frontend never do. And the browser network is `internal: true`, so the only way out to the internet from a browser session is through Squid.
 
-**My objection to “just add guardrails” is that it often leaves the most important noun unspecified. Guard which boundary, against which failure, with whose authority?**
+<ArticleDiagram stem="01-architecting-deterministic-infrastructure" alt="Fig. 1 — Trusted services share the control network. Only the brokers hold the Docker socket, and browser sessions can only reach the internet through the egress proxy." />
 
-A content filter, a tool schema, an approval screen, and a network policy are different controls. None substitutes for the others.
+We chose Compose plus a small host controller over Kubernetes because each deployment is one client on one large machine. Kubernetes would have handed us scheduling we didn't need and moved the failure modes somewhere the client's IT team couldn't see them.
 
-## Deterministic does not mean infallible
+## Every run has exactly one owner, and ownership can be lost
 
-The word can become misleading when it is used as a synonym for reliable.
+The core primitive is a small immutable record:
 
-A deterministic policy evaluator can return the same decision for the same recorded inputs. That does not make the policy correct. A state machine can reject an invalid transition. That does not make an external service available. A replay can reconstruct an execution trace without reproducing the model's exact output.
-
-The achievable goal is narrower and more valuable: **predictable rules around unpredictable proposals**.
-
-For each privileged action, I want an answer to five questions: who requested it, what exact operation was authorized, which state that authorization depended on, how long the authority lasts, and how the outcome will be established.
-
-Those answers belong in records the application understands, not only in prose the model has generated.
-
-## A small execution contract goes a long way
-
-A useful starting point is an action envelope. This example is deliberately small; it illustrates the information boundary, not a complete security implementation.
-
-```json
-{
-  "action_id": "act_7f42",
-  "run_id": "run_b619",
-  "principal_id": "user_23",
-  "operation": "report.publish",
-  "resource_id": "report_81",
-  "resource_version": 4,
-  "arguments_digest": "sha256:example-digest",
-  "policy_version": "publish-policy-v3",
-  "deadline": "2026-10-06T12:30:00Z",
-  "approval_required": true
-}
+```python
+@dataclass(frozen=True)
+class RunOwner:
+    run_id: str
+    attempt_id: str
+    epoch: int
+    worker_id: str
 ```
 
-The important fields are not the particular names. They are the relationships.
+A worker that picks up a run starts a `LeaseKeeper` thread that renews the lease every five seconds. If renewal keeps failing for twenty seconds, the worker stops treating the run as its own. It doesn't try to win it back. An old worker must never adopt an attempt that a successor has already claimed.
 
-The resource version makes the authorization specific to an object state. The arguments digest makes it specific to the proposed operation. The deadline prevents a forgotten task from retaining indefinite authority. The policy version makes the decision explainable after a configuration change.
+The renewal itself is a Lua compare-and-renew in Redis, because the naive version is wrong in a subtle way:
 
-A digest alone proves nothing about who approved an action. The approval record still needs authenticated identity, server-side validation, and protection against reuse. Similarly, a deadline written into JSON is only useful when the actual executor checks it.
-
-Keep a durable action identifier separate from an execution-attempt identifier. Retries of the same intended action should preserve the former while receiving new attempts. A genuinely new user instruction should not accidentally reuse an old deduplication key.
-
-Idempotent APIs are valuable precisely because a timeout does not tell the caller whether a side effect occurred. AWS's engineering discussion of idempotent operations addresses this ambiguity at the API boundary.[1]
-
-<ArticleDiagram stem="01-architecting-deterministic-infrastructure" alt="Action proposals pass through an authority check and owned execution; durable outcomes support reconciliation." />
-
-## Separate trust before separating services
-
-I do not begin with a target number of microservices. I begin with the capabilities that should never share ambient access.
-
-An authenticated browser contains session state that may grant access to an account. A generated-code runtime executes instructions that should be treated as untrusted. The control service can authorize work. An artifact store can expose outputs to people who were not present during execution.
-
-Putting these in different processes is a start. Giving those processes the same credentials, writable volumes, and unrestricted network access can undo much of the benefit.
-
-The control service should issue narrow work requests. The browser should receive access to the required identity and destinations, not the application's entire secret environment. Generated code should receive an approved input file or a scoped handle, not the database password used to obtain it.
-
-Artifacts should move through a promotion step: identify the producing run, validate the type and size, record an immutable version, and authorize access before sharing.
-
-This is also where deployment convenience can become a trap. Docker provides useful isolation mechanisms, but daemon access and host configuration are security-sensitive. A mounted Docker socket is not an ordinary application dependency.[2] Where the threat model includes hostile generated code, a sandboxed runtime can provide an additional boundary; it still has its own compatibility and security limits.[3]
-
-The architecture can remain easy to deploy without making every component equally powerful.
-
-## A state machine is more useful than a confident status message
-
-For a side-effecting operation, model at least these distinctions:
-
-```text
-proposed -> awaiting_approval -> authorized -> executing
-                                          -> succeeded
-                                          -> failed
-                                          -> outcome_unknown
+```lua
+-- KEYS[1] = lease key, ARGV[1] = owner token, ARGV[2] = ttl ms
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+end
+return 0
 ```
 
-There are additional transitions for expiry, rejection, and cancellation. The crucial state is `outcome_unknown`.
+With `GET` followed by `EXPIRE` from Python, there is a window in which your lease expires, the next owner takes it, and then your `EXPIRE` lands on *their* lease. You've just extended someone else's ownership on the strength of a stale read. Release is a compare-and-delete for the same reason.
 
-Without it, the application tends to force ambiguous failures into “failed,” which invites an unsafe retry, or “succeeded,” which invents an outcome. A timeout after submission is different from a validation error before submission.
+When the worker pool sees a child process exit, it immediately sets `lease_expires_at = now` on that child's running runs, so the next worker doesn't have to wait out a TTL to take over. We only do this when we actually observe the exit. Missing metadata in Redis is not treated as death — that was a lesson from a Redis restart that made several healthy workers look dead.
 
-A restart should consult durable action state and reconcile with the external service where possible. It should not ask a fresh model invocation to infer whether the previous worker probably finished.
+## Retries belong to the application
 
-Cancellation deserves the same precision. Once cancellation is recorded, the dispatch gate should reject new work for that run. It may not undo an operation already accepted by another system. The interface should say which work was stopped, which work completed, and which outcome still needs reconciliation.
+We call the model provider's SDK with `max_retries=0`. All retries are ours.
 
-A truthful partial result is better than a reassuring fiction.
+That came from a specific failure. A provider returned a quota error with a `Retry-After` that was hours long, and the SDK, quite reasonably from its point of view, honoured it — inside a job with a 600-second timeout. The run sat there doing nothing until the job was killed, and the user saw a spinner followed by a generic timeout.
 
-## Ownership must survive a worker restart
+Our retry policy classifies failures first: transient transport, rate limited, quota exhausted, unknown tool, repeated tool call, unpaired tool results, and a few more. Each class gets its own treatment. The defaults are three retries (a user can raise it to eight), 2–12 seconds of backoff, a cap of 60 seconds on any server-requested delay, and a 75-second limit on an idle stream. Quota exhaustion isn't retried at all. It becomes a clear message.
 
-Suppose worker A owns a run. Its lease expires during a pause. Worker B takes over. Worker A then resumes.
+## An uncertain outcome becomes a receipt
 
-A heartbeat tells us whether a worker has been heard from recently. It does not, by itself, prevent that old worker from writing.
+This is the idea I'd keep if I had to throw the rest away.
 
-For writes under the application's control, a generation number or fencing token can make stale ownership rejectable. The durable store accepts a state transition only when the writer presents the current generation and the expected previous state. Claiming ownership, allocating that generation, and recording the transition need transactional or otherwise atomic semantics.
+When a worker dies, some calls are in a state nobody can resolve from the inside. A model call was dispatched but no usage event came back. A browser was asked to start and the client got an HTTP 499, but the container may well be running. In each case the tempting move is to retry, and in each case retrying can double the effect.
 
-For external writes, the problem is harder. A third-party service may not understand the generation. An action gateway can centralize dispatch and ownership checks. It still needs destination-supported idempotency, outcome reconciliation, or a deliberate refusal to retry automatically when the effect cannot be established. A distributed lock does not magically reach across an API boundary.
+We don't. An interrupted model call becomes a visible "unavailable" entry in the run's ledger. A recovery ledger carries the *accepted* results and the exact resource and call identities across a crash, so the next attempt can continue from facts. Its own docstring is blunt about its limits: it cannot make an interrupted mutation safe to repeat.
 
-This is the sort of detail that makes an architecture credible. “We use leases” is the beginning of an explanation, not the end.
+Reads are different. Inside a run, a read can be replayed, with one in-flight call per read. A successful write bumps a per-domain epoch (workflows, watchlists, skills, workspace, external), so a read → edit → verify sequence isn't mistaken for the agent going round in circles.
 
-## Replay the evidence; do not replay the side effect
+## Two incidents that changed the code
 
-A useful audit trail includes the action envelope, policy outcome, tool version, attempt identity, input references, output references, and relevant state transitions. It should not indiscriminately collect credentials, private page contents, or hidden model reasoning.
+**Transactions held across model waits.** In early October we found the runner holding SQL read transactions open while it waited on sandbox and browser health checks and MCP teardown — calls that can take seconds. The fix had a trap in it. Rolling back expires ORM objects, so the next time anything touched a field on the run, SQLAlchemy quietly opened a *new* transaction, this time from the SDK's concurrent task. We ended up committing clean reads with `expire_on_commit=False` and rolling back only when the session was actually dirty. We proved it with a real pool of exactly one connection and zero overflow: any leaked transaction deadlocks immediately, which is a much better test than hoping a bigger pool hides it.
 
-The trace needs to answer what the system observed and did. It does not need to pretend to expose every internal computation of the model.
+**A deploy racing the capacity controller.** A rollout failed with a "missing container" because the host capacity controller was resizing workers at the same moment. Then a recovery command was started before the failing Compose command had exited, which made the name conflicts worse. Now every component that touches Compose — deploy, redeploy, browser image sync, the resizer — takes the same exclusive `flock`. We also wrote down a rule that felt silly until we needed it: always wait for a command's process to exit before starting the command that's supposed to recover from it.
 
-There are two different replay modes worth naming. An **inspection replay** rebuilds the visible sequence from recorded events and saved outputs. An **execution replay** runs code again in an isolated test environment with external writes disabled or replaced by fixtures.
+## What "deterministic" means here
 
-Confusing the two is dangerous. A “debug this run” button should not send the email again.
+It doesn't mean nothing fails. Workers die, providers rate-limit, Docker Desktop does strange things with volumes. It means that for any run we can answer three questions from stored state, not from logs and guesswork: who owned it, which effects were accepted, and which outcomes are still unknown.
 
-Keep enough provenance to identify an input and its retrieval time. Make retention, redaction, and access control explicit. An immutable record is not an excuse to retain sensitive information forever.
-
-## What I would test before adding more autonomy
-
-Start with a small failure suite rather than a larger collection of prompts.
-
-One test sends the same logical action twice and checks that the external outcome is not duplicated. Another expires an approval, then verifies that execution fails even though the model still has the old approval text in context. Another cancels a run while a child worker is active and checks that the child cannot publish a late result as current.
-
-For isolation, test that generated code cannot access a browser profile or control-service credentials. For artifacts, verify that a user cannot fetch another user's output by guessing its identifier. For recovery, crash the worker between external acceptance and local success recording.
-
-These tests do not prove the system is secure. They make the intended boundaries executable and expose regressions that a successful demo will never show.
-
-The most useful result of this exercise may be discovering that an operation is not safely automatable yet. That is architectural information, not a failure of ambition.
-
-## Start with one trustworthy action
-
-It is tempting to build the entire agent platform before shipping a narrow workflow. My preference is the opposite: make one consequential action understandable from proposal through recovery.
-
-Give it a typed request, explicit authorization, bounded execution, a durable outcome, and an honest failure path. Then reuse those contracts across more tools.
-
-The model will improve. Providers will change. A new orchestration library will make the demo shorter. None of that removes the need to know whether an action was authorized, whether it happened, and what the system should do next.
-
-That is the infrastructure worth keeping.
-
-## Technical notes
-
-[1] [AWS Builders' Library: making retries safe with idempotent APIs](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/).
-
-[2] [Docker Engine security](https://docs.docker.com/engine/security/).
-
-[3] [gVisor: architecture and scope](https://gvisor.dev/docs/).
+If we can't answer the third question, the system says "unknown" to the user instead of picking whichever answer looks better. That one rule has prevented more bad outcomes than any amount of clever retry logic.

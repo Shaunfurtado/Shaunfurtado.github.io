@@ -1,19 +1,20 @@
-digraph design {
-graph [rankdir=TB, bgcolor="#f6f4ee", pad="0.32", nodesep="0.42", ranksep="0.55", splines=polyline, fontname="DejaVu Sans", fontsize=18];
-node [shape=box, style="rounded,filled", fillcolor="#ffffff", color="#b9c8c4", penwidth=1.3, fontname="DejaVu Sans", fontsize=17, margin="0.20,0.16"];
-edge [color="#58736e", fontname="DejaVu Sans", fontsize=12, arrowsize=0.7, penwidth=1.4];
-request [label="Authorized execution\nrequest",fillcolor="#16352f",fontcolor="#ffffff",color="#16352f"];
-broker [label="Sandbox broker\nadmission + limits"];
-runtime [label="Isolated runtime\nrestricted filesystem"];
-network [label="Controlled egress\nallow / deny policy"];
-collect [label="Bounded artifact\ncollection"];
-cleanup [label="Verify cleanup\nor quarantine"];
-request -> broker [label=""];
-broker -> runtime [label="lease"];
-runtime -> network [label="network attempts"];
-runtime -> collect [label="outputs"];
-collect -> cleanup [label="always finalize"];
-broker -> cleanup [label="cancel / expiry",style=dashed,constraint=false];
-{rank=same; request; broker; runtime;}
-{rank=same; network; collect; cleanup;}
+digraph sandbox {
+rankdir=TB;
+agent [label="agent run"];
+api [label="backend\nmints 120s grant\nwrites tool files", class="key"];
+broker [label="sandbox broker\nverify · policy\nmemory admission"];
+subgraph cluster_guest {
+  label="guest · network none · cap_drop ALL";
+  vm [label="BoxLite microVM\nor gVisor container"];
+  ws [label="/workspace\ntools · runs · user/out"];
+}
+snap [label="snapshot tar\n(idle 90s)", class="ghost"];
+out [label="downloads\npath + hash checked"];
+agent -> api [label="sandbox_run_python"];
+api -> broker [label="HMAC grant"];
+api -> ws [label="materialize", style=dashed];
+broker -> vm [label="exec, 30s"];
+vm -> ws;
+ws -> snap [style=dashed];
+ws -> out;
 }

@@ -1,20 +1,20 @@
-digraph design {
-graph [rankdir=TB, bgcolor="#f6f4ee", pad="0.32", nodesep="0.42", ranksep="0.55", splines=polyline, fontname="DejaVu Sans", fontsize=18];
-node [shape=box, style="rounded,filled", fillcolor="#ffffff", color="#b9c8c4", penwidth=1.3, fontname="DejaVu Sans", fontsize=17, margin="0.20,0.16"];
-edge [color="#58736e", fontname="DejaVu Sans", fontsize=12, arrowsize=0.7, penwidth=1.4];
-user [label="Authorized user\nand task scope",fillcolor="#16352f",fontcolor="#ffffff",color="#16352f"];
-grant [label="Session grant\nidentity + expiry"];
-browser [label="Browser context\nscoped auth state"];
-controller [label="Exclusive controller\ncurrent epoch"];
-observe [label="Versioned page\nobservations"];
-handoff [label="Human takeover\nadvance epoch"];
-user -> grant [label=""];
-grant -> browser [label=""];
-controller -> browser [label="accepted commands"];
-browser -> observe [label=""];
-user -> handoff [label="take control"];
-handoff -> controller [label="invalidate stale owner"];
-{rank=same; user; grant;}
-{rank=same; handoff; controller; browser;}
-{rank=same; observe;}
+digraph browser {
+rankdir=TB;
+user [label="user"];
+api [label="backend\nRBAC · epoch CAS\nviewer tokens", class="key"];
+broker [label="browser broker\nallowlist · DNS check\njournal · capacity"];
+subgraph cluster_plane {
+  label="browser-plane (internal)";
+  session [label="session container\nChromium · Playwright\nKasmVNC"];
+  squid [label="squid egress\nno private ranges"];
+}
+profile [label="profile volume\none writer"];
+net [label="internet", class="ghost"];
+user -> api;
+api -> broker [label="grant @ epoch"];
+broker -> session [label="launch"];
+session -> profile;
+session -> squid;
+squid -> net;
+api -> session [label="WSS proxy (takeover)", style=dashed];
 }

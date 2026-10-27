@@ -1,19 +1,18 @@
-digraph design {
-graph [rankdir=TB, bgcolor="#f6f4ee", pad="0.32", nodesep="0.42", ranksep="0.55", splines=polyline, fontname="DejaVu Sans", fontsize=18];
-node [shape=box, style="rounded,filled", fillcolor="#ffffff", color="#b9c8c4", penwidth=1.3, fontname="DejaVu Sans", fontsize=17, margin="0.20,0.16"];
-edge [color="#58736e", fontname="DejaVu Sans", fontsize=12, arrowsize=0.7, penwidth=1.4];
-prior [label="Current checkpoint\n+ coverage boundary",fillcolor="#16352f",fontcolor="#ffffff",color="#16352f"];
-candidate [label="Build candidate\nfrom bounded history"];
-validate [label="Validate coverage\nconstraints + tool groups"];
-commit [label="Conditional atomic\ncheckpoint commit"];
-continue [label="Continue from\naccepted checkpoint"];
-retain [label="On failure: retain\nold summary + boundary",fillcolor="#fbede1",color="#ba7245"];
-prior -> candidate [label=""];
-candidate -> validate [label=""];
-validate -> commit [label="pass"];
-validate -> retain [label="fail"];
-commit -> continue [label="version matches"];
-commit -> retain [label="conflict",style=dashed,constraint=false];
-{rank=same; prior; candidate; validate;}
-{rank=same; retain; commit; continue;}
+digraph compaction {
+rankdir=TB;
+turn [label="new turn"];
+check [label="over 80% of\nbudget − reserve?", shape=diamond, style=""];
+reuse [label="frozen summary\n+ recent raw turns"];
+summ [label="cheap summariser\npolicy-approved model", class="key"];
+fall [label="fallback\nfrozen summary / drop oldest", class="ghost"];
+input [label="model input"];
+index [label="audit log + FTS index\nnever compacted"];
+turn -> check;
+check -> reuse [label="no"];
+check -> summ [label="yes"];
+summ -> reuse [label="new summary"];
+summ -> fall [label="fails", style=dashed];
+reuse -> input;
+fall -> input;
+input -> index [label="session_search / expand", style=dashed];
 }

@@ -1,7 +1,6 @@
 ---
-title: 'Autoscaling AI Workers: Queue Length Is Not a Capacity Plan'
-description: Autoscale AI workers using queue age, work estimates, runtime headroom,
-  and safe draining. Separate admission and placement from adding more replicas.
+title: Scaling Agent Workers on One Machine, Memory First
+description: How a self-hosted agent platform sizes its worker pools — ready capacity versus process count, cgroup-aware limits, warm drains, a deadlock between parent and child runs, and a capacity bug that double-counted memory.
 pubDate: '2026-12-15'
 tags:
 - infrastructure
@@ -12,140 +11,72 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/autoscaling-ai-workers-queue-age-capacity/
-heroImage: /blog-assets/covers/04-autoscaling-ai-workers-queue-age-capacity.png
-heroImageAlt: 'Queue length is not capacity — Autoscaling AI Workers: Queue Length
-  Is Not a Capacity Plan; an editorial diagram cover by Shaun Furtado.'
-seoTitle: Autoscaling AI Workers Beyond Queue Length
+seoTitle: 'Scaling AI Agent Workers: Ready Capacity, Memory, and Drains'
 series: Systems in Practice
 articleId: 4
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
+Most autoscaling advice assumes a cluster: add nodes, let an HPA watch a metric, done. Ananta runs on one client's machine. There is no next node. Every worker we add competes for the same RAM as the browser sessions, the code sandbox, Postgres, and the client's own processes.
 
-One hundred queued jobs is not a capacity plan.
+So our scaling problem isn't really "how many replicas". It's "how much work can this box take right now without hurting something else", answered every second, by code that has to be right when the numbers it reads are wrong.
 
-Those jobs might be tiny metadata reads, minute-long browser sessions, or memory-heavy document conversions. A queue length collapses all of that work into a single integer. Scaling directly from that integer can add too little capacity, too much capacity, or exactly the wrong kind.
+When I first wrote about this, I described scaling on queue age. That's not what we ended up doing, and the reason is worth explaining.
 
-For **autoscaling AI workers, browsers, and sandboxes**, I prefer to ask a different question: how much work is waiting, how quickly is more arriving, and which resource prevents it from finishing?
+## Running processes aren't ready capacity
 
-## Three control loops, not one replica count
+Agent runs execute on RQ workers. A parent process in each worker container spawns children — each one a separate `python -m` process, not a fork after import — and each child runs one worker.
 
-There are at least three decisions in a system like this.
+The first version scaled on queue depth versus process count. It over-counted constantly. A process that's spawned but still importing the model SDK and tool registry (a few seconds, and a lot of memory) isn't capacity. Neither is a process that's alive but wedged. So the pool asks RQ which workers are registered and idle, matching on hostname *and* pid — pid alone collides between containers — and counts three groups: ready and idle, busy, and starting.
 
-**Admission** decides whether a new task can be accepted. **Placement** decides which worker or execution pool can run it. **Scaling** decides whether additional capacity should be created.
-
-These loops need related information, but they operate at different speeds. Rejecting an over-budget request can happen immediately. Assigning a warm browser can take a short scheduling step. Adding a host can take much longer.
-
-A replica scaler cannot protect the next few seconds of overload by itself. The system still needs queue limits, concurrency limits, timeouts, and a refusal path while new capacity is starting.
-
-Likewise, a concurrency semaphore is not autoscaling. It can stop excessive work from starting, but it does not create the resources needed to drain the backlog.
-
-## Measure waiting time alongside waiting count
-
-Queue age is often closer to the user's problem than queue length.
-
-A short queue whose oldest job has waited several minutes can indicate a stuck worker, an unavailable execution profile, or starvation. A large queue that drains in a fraction of a second may not be a problem at all.
-
-I would track queue age by workload class, arrival rate, service time, active jobs, failed acquisitions, and available execution slots. For browser and sandbox work, I would also track startup latency separately from task runtime.
-
-Do not average interactive work together with batch jobs. The user waiting for a report preview and the overnight export pipeline have different latency expectations. They may also need different runtime images and resource limits.
-
-A single queue can still be appropriate early on. The important step is to preserve enough classification that you can see when it stops being appropriate.
-
-## A rough model is better than an unexplained threshold
-
-For planning, estimate the concurrency required to serve incoming work and drain the existing backlog:
-
-```text
-incoming_work = arrival_rate * mean_service_time
-backlog_work  = queued_service_seconds / drain_target_seconds
-
-estimated_slots = ceil(
-    (incoming_work + backlog_work) / target_utilization
-)
+```python
+pending = depth - ready_idle - starting
+target = max(floor, active + pending)
+target = min(target, cpu_cap, active + memory_slots)
 ```
 
-The units matter. Arrival rate is jobs per second. Service time is seconds per job. Their product estimates occupied slots. The backlog term is also measured in slots.
+Children preload the heavy imports *before* they register with RQ, so "ready" really means a chat won't pay the cold start. The parent wakes on a Redis `BLPOP` hint when work arrives, waiting at most a second, and spawns at most five processes per tick, because imports allocate memory before the cgroup sample shows it.
 
-For a synthetic example, suppose jobs arrive at 0.5 per second and take 8 seconds on average. That is about 4 occupied slots for incoming demand. Suppose the queued work totals 240 service-seconds and you want to drain it in 60 seconds. That adds another 4 slots. At a planning utilization of 0.7, the estimate rounds up to 12 slots.
+## Limits come from the cgroup, not the host
 
-This is a fluid approximation, not a latency guarantee. Bursty arrivals, heavy-tailed runtimes, cold starts, and shared bottlenecks can make the estimate wrong. Use it to explain a controller's intent, then validate it with workload measurements and load tests.
+Inside a container, `os.cpu_count()` tells you about the host, which is the wrong question. The CPU cap reads `cpu.max` and multiplies by an oversubscription factor (agent runs spend most of their time waiting on the model, so a core can carry several). Memory slots come from `memory.max − memory.current − reserve`, divided by about 384 MiB per worker.
 
-**A scaling rule should have a unit you can explain. “Queue bigger than twenty” is rarely enough.**
+One rule in that code matters more than the formulas: if queue telemetry fails, the answer is *unknown*, not *empty*. A Redis timeout used to look like a quiet queue, the idle timer would start, and five minutes later we'd scale down in the middle of a busy period. Now an unreadable queue holds current capacity and doesn't start the idle clock.
 
-## Apply hard ceilings after estimating demand
+## Scaling down is a drain, never a kill
 
-Demand does not create memory.
+Scale-down sends one SIGTERM. In RQ that means "finish the current job, then exit". We never send a second signal. An agent run can take several minutes, and killing it halfway turns a capacity decision into a user-visible failure with uncertain side effects. (On Windows, SIGTERM is a kill, so in development there's no drain at all — which once had me debugging "lost" runs that were really just my laptop.)
 
-The target must respect the pool's memory budget, CPU constraints, runtime startup capacity, external-service quotas, tenant limits, and the operator's cost ceiling. Some constraints are instantaneous; others are rate budgets over time.
+There's also a drain file. Touching `/tmp/ananta-execution-drain` sets the target to zero, which is how deploys empty a container politely.
 
-For memory, use measured workload envelopes and retain headroom for the host and control services. Total host memory is not the same as currently available memory. An average per-session footprint is not a safe maximum when a minority of pages are much larger.
+## The host controller
 
-When telemetry is unavailable, decide explicitly whether to stop new admissions, use a conservative fallback, or degrade to a different permitted task. Do not interpret missing data as unlimited capacity.
+Above the in-container pools there's a small host-level controller, running as a user systemd service, that decides how many worker *containers* exist. It's allowed to scale exactly three services and nothing else.
 
-Rate-limited model calls require a separate governor. Doubling worker replicas can make provider throttling worse rather than improving throughput. Waiting workers also continue to hold resources unless the execution design releases them.
+Each tick it reads demand — only workers with a heartbeat in the last 15 seconds count — and computes slots from the host's available memory, after leaving room for the full sandbox and browser reservations plus 20% headroom. Slots are shared out by weighted fair rounds, with reservations for chat, workflow, and subagent work, and busy work is never taken away because an estimate dropped. A lower target has to hold for five minutes before it applies.
 
-## Separate cheap orchestration from expensive execution
+Removing a container is careful in a way Compose can't be. Compose won't let you choose *which* replica goes, so the controller checks through `docker exec` that a replica's workers aren't busy, touches its drain file, waits for them to deregister and for any preloading children to finish, and only then stops it with a 90-second grace. Before any of that, it refuses to act if the image isn't pinned by digest or if a release is half-applied, and it holds the same deploy lock as everything else that touches Compose.
 
-A queue worker does not have to contain the browser or sandbox it coordinates.
+<ArticleDiagram stem="04-autoscaling-ai-workers-queue-age-capacity" alt="Fig. 1 — Pools scale processes on verified readiness inside cgroup limits. The host controller scales containers under the deploy lock. The browser and sandbox brokers each run their own memory admission against the same host." />
 
-<ArticleDiagram stem="04-autoscaling-ai-workers-queue-age-capacity" alt="Admission routes tasks to separate execution pools; metrics drive scaling, while hard budgets constrain all pools." />
+## The deadlock
 
-A lightweight orchestration worker can request a browser session or sandbox slot from a broker. The broker owns the expensive runtime and its lifecycle. This makes the resource boundary visible and lets each pool scale according to its own limits.
+In October we ran a paid evaluation: 15 real sessions, 45 parent runs. One scenario had an agent delegate to child runs that timed out immediately. It exposed a deadlock we'd built ourselves.
 
-There is a trade-off: the orchestration worker may sit blocked while the external runtime works. That can be acceptable for a simple synchronous design. At higher concurrency, persisting a waiting state and resuming from completion events may use fewer worker slots. The extra state-machine complexity should be justified by measured pressure.
+We had work stealing — idle workers could pick up jobs from other queues. Child workers would pick up *parent* jobs. Those parents would then delegate, and wait for children. But the child slots were full of parents. Under saturation, every slot was a parent waiting on a child that had nowhere to run.
 
-Adding an asynchronous framework everywhere is not automatically the simpler option. Keeping every long-running task attached to a process is not automatically the cheaper one either.
+The fix was one rule: child workers never lend their slots to parents. Work stealing is still available, off by default, and child capacity is always reserved for children.
 
-## Scaling down is where state becomes inconvenient
+## The bug that rejected browsers we had room for
 
-Starting a new replica is usually easier than safely removing an old one.
+Browser sessions have their own admission, in the browser broker, because each one is a 2 GiB container. The ceiling is the minimum of three numbers: a configured maximum of 32, a share of total host memory, and available memory plus what current sessions are actually using.
 
-A worker may own a job, a browser may hold an authenticated session, and a sandbox may be collecting an output. Killing those resources indiscriminately turns a routine scale-down into a recovery incident.
+For a while, that third number was wrong. Admission took `MemAvailable` — which already excludes what the running sessions use — and then charged each of them their full 2 GiB limit again. Every resident browser was counted twice, and users got "no capacity" with gigabytes free.
 
-Use draining: stop accepting new work, allow bounded in-flight work to complete, then reclaim the runtime. For tasks that cannot finish inside the drain window, define checkpointing or interruption behavior and preserve an honest terminal state.
+The fix credits back only measured anonymous memory from each session's cgroup (never file cache, which the kernel can reclaim), capped per session, and only for this deployment's containers. With eight sessions using 4 GiB in total and 19 GiB available, the ceiling went from 8 to 10. The sampler gets a 1.5-second budget and 0.2-second Docker socket timeouts. If anything fails, it credits nothing — falling back to the conservative answer, not the optimistic one.
 
-An idle browser is not necessarily disposable. It may be waiting for a human to complete authentication. That is a product state with a deadline, not simply a low-CPU process.
+## About queue age
 
-Keep hysteresis and stabilization in the scaling loop so small fluctuations do not cause constant churn. Kubernetes' horizontal autoscaler supports resource and custom metrics as well as configurable scaling behavior; adopting it still requires choosing appropriate signals and limits.[1]
+Queue age is in our health endpoints — every queue reports its oldest waiting job — and it's the first thing I look at when someone says "the agent is slow". But it doesn't drive scaling, and I've stopped thinking it should on a single machine. Queue age tells you you're *late*. What decides whether you can do anything about it is memory, and memory is a hard ceiling, not a dial.
 
-## Warm capacity is an economic choice
-
-A warm pool buys lower startup latency with idle resource cost and additional cleanup obligations.
-
-The right size depends on arrival patterns, startup distributions, how long tasks run, and whether runtime reuse is safe. A large warm pool is wasteful when requests are infrequent. A zero-sized pool can make every interactive request pay the cold-start cost.
-
-Measure the portion of user-visible latency attributable to startup before optimizing it. When a task spends most of its time waiting on a remote site or model, shaving a little off container creation may not matter much.
-
-I would also distinguish a warm image cache from a reusable authenticated runtime. Keeping an image locally available is not the same risk as keeping a logged-in browser ready for reuse.
-
-## “Edge” needs a concrete meaning
-
-Running workers near users or data can be useful. It does not make a central Redis connection insensitive to network latency or partitions.
-
-For regional deployment, decide which region owns a task, where its durable state lives, and what happens when the connection to that state disappears. An isolated region should not continue executing privileged work indefinitely on the assumption that its ownership is still valid.
-
-A lightweight queue can fit small regional nodes. That is different from running a conventional Python worker inside an edge-isolate environment that does not support its process model.
-
-Use the word edge only when you can explain the placement and failure behavior it describes.
-
-## The controller should be boring under stress
-
-A good load test includes a burst of expensive jobs, not only a steady stream of average ones. It includes slow runtime startup, a failed metrics source, a quota-limited provider, and a scale-down while work is active.
-
-Look for oscillation, starvation, excessive retries, and a growing population of workers that are alive but not making progress. Check whether admission limits protect the system while scaling catches up.
-
-Most importantly, test the user's view. A queue can be operationally healthy while presenting an indefinite spinner. Show whether a task is queued, starting a runtime, executing, waiting for approval, or blocked by a limit.
-
-Autoscaling is successful when the system meets its service goals within a resource budget. The replica graph is only one piece of evidence.
-
-## Technical notes
-
-[1] [Kubernetes: horizontal pod autoscaling](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/).
-
-Docker Compose profiles can selectively enable services; they are not an autoscaling controller. See [Docker's profiles documentation](https://docs.docker.com/compose/how-tos/profiles/).
-
-
-## Continue reading
-
-[Python RQ in Production: Simple Queues, Explicit Guarantees](/blog/python-rq-production-scaling-patterns/) · [AI Code Sandboxes: Docker Is a Starting Point, Not a Complete Security Story](/blog/ai-code-sandboxes-docker-security-boundary/)
+We're honest about the limits, too. Our pilot ran 12 jobs on 4 workers with about 22 ms p95 to acquire a warm worker and a third of a second to drain. A burst of 250 runs on 16 slots was all admitted in under nine seconds, but took about 490 seconds to clear, against a 120-second target. That's a failed gate, and it's written down as one. The target of a hundred concurrent runs, 25 sandboxes, and 10 browsers on one box is explicitly marked as not yet qualified. Writing that down has been more useful than any dashboard.

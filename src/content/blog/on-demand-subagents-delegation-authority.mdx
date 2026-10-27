@@ -1,7 +1,6 @@
 ---
-title: 'On-Demand Subagents: Delegate Work, Not Authority'
-description: Design on-demand subagents with narrow tasks, scoped evidence, bounded
-  budgets, cancellation ownership, and results the parent can verify before publishing.
+title: Subagents in Ananta — One Generation, No Transcript, and a Reversal I Didn't Expect
+description: How our research agent delegates to child runs — skill-gated spawning, a durable subrun table, context without the parent transcript, evidence-checked results, and why we moved from a strict tool allowlist to a parent-only denylist.
 pubDate: '2026-11-24'
 tags:
 - ai-agents
@@ -12,146 +11,92 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/on-demand-subagents-delegation-authority/
-heroImage: /blog-assets/covers/10-on-demand-subagents-delegation-authority.png
-heroImageAlt: 'Delegate work, not authority — On-Demand Subagents: Delegate Work,
-  Not Authority; an editorial diagram cover by Shaun Furtado.'
-seoTitle: 'On-Demand Subagents: Scope, Budgets, and Evidence'
+seoTitle: 'On-Demand Subagents: Isolation, Evidence, and Real Failure Modes'
 series: Systems in Practice
 articleId: 10
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
+The case for subagents in Ananta is narrow. Someone asks the agent to compare two companies' annual results. Each company means a filing to find, a few hundred pages to read selectively, and numbers to extract with their scope — standalone or consolidated — checked. Doing both inside one conversation fills the context with two filings' worth of evidence before any comparison happens.
 
-A parent agent asks three subagents to investigate a question. They return three polished answers. The parent combines them into a fourth polished answer.
+So the parent delegates: one child per company, each with a clean context, each returning a structured result. The parent does the comparison. Here's how that's built, and the one design decision I reversed within three weeks.
 
-What improved?
+## One generation, gated by skills
 
-Possibly coverage. Possibly latency. Possibly nothing. If all three children saw the same sources, repeated the same search, and inherited the same mistaken assumption, the architecture may have bought expensive agreement.
+Children are generation 1. The parent is generation 0. Any spawn request from a non-zero generation is rejected with `generation_forbidden`, and children never get the spawn tools anyway. No grandchildren, no agent-to-agent protocol, no peer networks. Those are written down as non-goals.
 
-For **multi-agent systems**, I want delegation to have a reason that survives removing the word agent from the diagram.
+A parent can't spawn just because a model decides it would be nice. Spawning is declared by a skill. A skill such as delegated source review carries a block in its frontmatter:
 
-## A subagent is a scoped unit of work
+```yaml
+spawn:
+  mode: isolated_child
+  max_fanout: 4
+  max_concurrency: 4
+```
 
-I find it more useful to think of a child agent as a worker with a task contract, a bounded context, a set of permitted capabilities, and a result format.
+On top of that, every `subagent_*` tool needs the `research.deep` permission, and there's an optional per-member daily limit on deep research, reserved idempotently so a retry doesn't count twice.
 
-A role name such as “senior researcher” is not enough. It does not explain which question the child should answer, what evidence it needs, what it may do, or when it should stop.
+## Durable children
 
-A stronger delegation asks for something observable: compare two published service-level definitions, extract a specific table, verify a calculation against supplied inputs, or identify contradictions among a bounded set of documents.
+The parent gets three tools: `subagent_run`, `subagent_status`, and `subagent_cancel`. A spawn waits at most 15 seconds. If the child hasn't finished, the parent gets a persisted handle and polls.
 
-These tasks can be parallelized when their inputs and outputs are sufficiently independent. A tightly coupled problem with shared evolving state may work better in one context.
+Each child is a row in an `agent_subruns` table with a lease, a heartbeat, an attempt, and an idempotency key derived from the task. States: submitted, queued, running, needs input, completed, partial, failed, cancel requested, cancelled, timed out. Cancelling the parent cascades to its children. On startup, reconciliation re-queues only work that is safe to re-run.
 
-**More agents is a resource decision, not a quality guarantee.**
+Running out of capacity isn't an error. `subagent_run` returns `status: "capacity_reached"` as a normal result, and the parent can do the work itself or wait. That change came from watching agents treat capacity errors as failures and give up on the whole task.
 
-The architecture should justify the coordination cost.
+## The child doesn't get the transcript
 
-## Create children from contracts, not theatrical personas
-
-On-demand generation is useful when the parent can compose a child configuration from approved pieces: a goal, a skill version, selected evidence, a permitted tool set, and a budget.
-
-The parent can propose that configuration. The application validates it. A generated instruction cannot install an arbitrary tool, widen data access, or remove an execution limit.
-
-Here is an illustrative request:
+The function that builds a child's context has no parameter for the parent's conversation. That's by design, not an oversight. A child gets a short system prefix, one typed task envelope, the skill body, and only the context hooks the skill lists — at most eight.
 
 ```json
 {
-  "goal": "Compare the response-time definitions in two documents.",
-  "input_evidence": ["ev_31", "ev_32"],
-  "skill_version": "document-comparison@3",
-  "requested_capabilities": ["evidence.read", "text.search"],
-  "deadline_seconds": 90,
-  "max_tool_calls": 8,
-  "output_contract": "comparison-findings-v1",
-  "may_delegate": false
+  "objective": "Extract FY26 and FY25 consolidated revenue and PAT from the annual report",
+  "acceptance": {
+    "required_evidence": 1,
+    "output_schema": "source_review.v1",
+    "environment_checks": []
+  },
+  "inputs": { "company": "INFY", "period": "FY26" },
+  "artifact_refs": [],
+  "parent": { "run_id": "…", "workspace_version": 41 }
 }
 ```
 
-The child receives the effective permissions computed by the server, not necessarily every capability it requested. Empty authorization should mean no authorization, not an invitation to fall back to all available tools.
+The transcript stays out because it's mostly noise for a narrow task, and because it's where the parent's half-formed conclusions live. A child that reads "I think margins fell" in the parent's history tends to find margins falling.
 
-A useful rule is that a child's authority cannot exceed the authority actually delegated to it by the parent and allowed by current policy. The server must enforce that relationship at execution time.
+## A result has to carry evidence
 
-## Give each child only the context it needs
+When a child finishes, its result is validated before the parent sees it. The output must match the declared schema. A `completed` result must have at least the required number of evidence references marked valid, at least one finding, and every declared environment check. Partial and failed results are accepted as partial or failed, so the parent can merge what was done. The digest the parent receives is a deterministic projection of the result, not another model's summary of it.
 
-Copying the entire parent transcript into every child is convenient. It can also be wasteful, distracting, and unnecessarily broad in access.
+One early failure: children returned perfectly reasonable prose that failed the structured contract every time. The fix was simply to show children the exact JSON result shape in their instructions. After that, a child reviewing an SEC filing came back with three findings, each tied to a source.
 
-A child comparing two documents needs those documents, the comparison question, relevant constraints, and the output contract. It probably does not need unrelated browser activity, private notes from another task, or the parent's entire tool history.
+<ArticleDiagram stem="10-on-demand-subagents-delegation-authority" alt="Fig. 1 — A skill declares spawning. The parent creates a durable subrun on a reserved queue. The child sees a task envelope, not the transcript, and its result must pass schema and evidence checks before the parent can use it." />
 
-Keep a route for requesting additional evidence. The parent or broker can approve that request under the same data-access policy. This makes missing information explicit rather than encouraging the child to fill gaps with plausible assumptions.
+## The reversal: from allowlist to denylist
 
-Subagent context isolation can help limit irrelevant history, a pattern discussed in context-engineering guidance.[1] It is not a security boundary by itself. The child tools and evidence retrieval still need real authorization.
+The first version, in early September, was strict. Children ran against a hard allowlist of about 24 read-only tools. Effective tools were the intersection of the skill's list, the user's permissions, what was available at runtime, the hard allowlist, and what the parent requested. Each child had fixed ceilings: 8 turns, 90 seconds, 30,000 input tokens, 3 web fetches, 24 tool calls, $2. The policy file's comment said it was deliberately an allowlist, not a denylist.
 
-## Partition the budget before launching work
+Three weeks later we rewrote it. A skill's tool list is now a routing hint, not a fence. Children get every tool available at runtime, filtered by the user's permissions, *minus* a parent-only list: spawning, proposing or activating skills, proposing or enabling extensions, composing or publishing canvases, and plan management. Per-child budgets became observability counters. Zero means unlimited, and the runtime doesn't enforce them as ceilings.
 
-A parent with a fixed budget cannot safely give every child the same full budget.
+```python
+effective = set(runtime_tools)
+if authorized:
+    effective &= authorized
+effective -= PARENT_ONLY_TOOLS   # spawn, skills, extensions, canvas, publish, plans
+```
 
-Reserve funds or token allowances atomically when launching children. Track usage and return unused reservations under a defined policy. Cap total concurrent children, total depth, wall-clock lifetime, and expensive tool families.
+In practice the strict version kept starving children. Real source reviews needed tools that weren't on the list, and the fixed ceilings ran out before the work did, so children timed out or came back partial. The change landed together with a batch of stability fixes: recovering malformed delegated tool calls, treating capacity as a normal result, and preserving partial work.
 
-Different budgets measure different things. A low token cap does not prevent a browser session from remaining open. A tool-call cap does not prevent one unbounded tool result. A deadline does not stop a stale worker unless the executor checks it.
+What didn't change is what actually bounds a child: the permission check that wraps every tool call and runs fresh each time, run-level gates on tool calls, model calls, and reserved tokens, a breaker for identical repeated calls, deadlines, and the monthly spend limit. A child can't publish, can't change skills, can't spawn, and can't do anything the user couldn't. Children also get the user's connector read tools but never write-backs, because write-backs need an interactive confirmation and a child has no one to ask.
 
-When children can delegate further, fan-out becomes a tree rather than a list. The remaining budget and authority need to propagate down that tree. For many applications, disabling recursive delegation initially is the easier design to operate.
+I still think "delegate work, not authority" is right. I just learned that authority lives in the permission check on each call, not in how short you make the child's tool list.
 
-## Parent and child lifetimes should be connected
+## What the evaluation showed
 
-Cancelling a parent should cancel or revoke its children according to a documented policy. A late child result should not publish into a task that has already been cancelled or superseded.
+Our October paid evaluation had ten child runs: three completed, three partial, two timed out, two cancelled. Not a great scorecard, but each failure pointed at something concrete.
 
-Bind the child to the parent's execution generation. On result submission, check that the parent still expects that child and that the result belongs to the correct attempt.
+- **A deadlock.** Parents wait for children while holding a worker. With work stealing, child workers picked up parent jobs. Under load, every slot held a parent waiting for a child with nowhere to run. Child workers now serve only the child queue.
+- **Polling killed by our own breaker.** The repeated-identical-call breaker (two identical calls and you're stopped) was killing parents that were legitimately polling `subagent_status`. Delegation waits are now exempt from that check but still count towards the overall tool-call limit, and the default wait went from 5 to 15 seconds.
+- **Misleading cost.** Child cost was taken from SDK reports, which were missing for some calls. It's now projected from our own call records, including retries and cancellations, and interrupted children keep their charges. Missing cost is never read as free.
 
-If the parent restarts, it should discover existing children through durable state rather than spawn a duplicate set because its local memory is empty. This is where a task graph earns its place: it records ownership and completion, not just a visually appealing topology.
-
-<ArticleDiagram stem="10-on-demand-subagents-delegation-authority" alt="A parent allocates bounded child contracts; child findings return through validation before synthesis and publication." />
-
-## Require evidence-bearing results
-
-A child's prose should not become authoritative merely because another model produced it.
-
-I would require a result status, findings, evidence references, unresolved issues, and any relevant calculation inputs. A completed status should mean the requested work met its acceptance conditions. A child that could not access a source should return blocked or partial, not a graceful-sounding substitute for evidence.
-
-The parent validates the structure and checks whether referenced evidence exists and is accessible. For consequential claims, it should verify support, not just count citations.
-
-A result can be well-formed and still be wrong. Schema validation eliminates one class of failure; evidence checks and task-specific evaluation handle others.
-
-## Keep shared writes out of the children by default
-
-Two children editing the same report can overwrite each other. Two children publishing different versions can leave the interface in a state neither intended.
-
-A cleaner default is for children to produce immutable candidate outputs. The parent owns reconciliation and publication. When shared state is necessary, use explicit concurrency control and narrow write responsibilities.
-
-This also improves the user's experience. There is one place that decides which findings make it into the final artifact and which remain unresolved. The interface does not need to reconcile competing child claims of completion.
-
-The parent is not automatically correct, of course. Its synthesis needs its own acceptance checks. Centralizing publication simply makes responsibility visible.
-
-## Diversity has to come from the work
-
-Assigning different role names does not guarantee independent evidence.
-
-For a source-review task, useful diversity can come from distinct source sets or independent verification methods. One child extracts terms; another checks a deterministic calculation; a third searches specifically for contradictory evidence.
-
-Even then, correlated failure remains possible. The children may share a model, a retrieval index, or an incorrect task assumption. Agreement is a signal to inspect, not a proof.
-
-I would rather launch two children with clearly different responsibilities than five children instructed to “think independently” while seeing identical inputs.
-
-## Queue design can make delegation deadlock
-
-A parent that waits synchronously for children can occupy the worker capacity those children need. Enough parents can fill the pool while their children remain queued.
-
-Reserve child capacity, use separate queues, or persist the parent's waiting state and resume it when results arrive. Each option has an operational cost. Choose based on concurrency and task duration, not on which diagram looks more agentic.
-
-The same applies to browser and sandbox slots. A parent holding a scarce runtime while waiting for children may waste more resources than the child model calls themselves.
-
-## Prove that delegation helped
-
-Compare a single-agent baseline against the delegated version on the same tasks. Measure completion quality, evidence support, total cost, wall-clock latency, duplicate work, and the frequency of blocked or abandoned children.
-
-Test cancellation, parent restart, malformed child output, budget exhaustion, and a child that returns after the parent has moved on. Include tasks where delegation should not occur.
-
-The strongest multi-agent system may be one that often chooses a single worker. That is not a lack of sophistication. It is evidence that delegation is serving the task rather than defining the product.
-
-## Technical notes
-
-[1] [Anthropic: subagents and context isolation](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents).
-
-For tool contracts and implementation responsibilities, see the [Model Context Protocol tools specification](https://modelcontextprotocol.io/specification/2025-06-18/server/tools). This article's delegation and budget contracts are illustrative application designs, not a claim that the protocol implements them.
-
-
-## Continue reading
-
-[Python RQ in Production: Simple Queues, Explicit Guarantees](/blog/python-rq-production-scaling-patterns/) · [Context Engineering for AI Agents: Build a Working View, Not a Bigger Transcript](/blog/context-engineering-ai-agents-working-state/)
+When it works, it works the way I hoped. In the acceptance run, two isolated children reviewed one company's FY26 and FY25 reports. The parent computed year-on-year growth from their two numbers — (178,650 − 162,990) / 162,990 = 9.61% — and the user's follow-up question was answered with zero further tool calls, because the evidence was already structured.

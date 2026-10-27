@@ -1,19 +1,16 @@
-digraph design {
-graph [rankdir=TB, bgcolor="#f6f4ee", pad="0.32", nodesep="0.42", ranksep="0.55", splines=polyline, fontname="DejaVu Sans", fontsize=18];
-node [shape=box, style="rounded,filled", fillcolor="#ffffff", color="#b9c8c4", penwidth=1.3, fontname="DejaVu Sans", fontsize=17, margin="0.20,0.16"];
-edge [color="#58736e", fontname="DejaVu Sans", fontsize=12, arrowsize=0.7, penwidth=1.4];
-stable [label="Stable instructions\n+ versioned tool profile",fillcolor="#16352f",fontcolor="#ffffff",color="#16352f"];
-tail [label="Dynamic task state\n+ current evidence"];
-request [label="Provider request\nstable prefix first"];
-usage [label="Raw usage\n+ coverage status"];
-metrics [label="Defined metrics\nrequests / tokens / cost"];
-verify [label="Verified task quality\n+ end-to-end cost"];
-stable -> request [label="prefix"];
-tail -> request [label="tail"];
-request -> usage [label=""];
-usage -> metrics [label="normalize per provider"];
-metrics -> verify [label="optimization guardrail"];
-{rank=same; stable; tail;}
-{rank=same; request; usage;}
-{rank=same; metrics; verify;}
+digraph caching {
+rankdir=TB;
+subgraph cluster_prefix {
+  label="cacheable prefix";
+  sys [label="frozen system prompt"];
+  tools [label="tool list\nappend-only order"];
+}
+hist [label="history /\ncompaction summary"];
+tail [label="trailing block\nclock · hooks · skills"];
+wire [label="wire layer\ncomponent hashes\ncache key hint", class="key"];
+prov [label="provider", class="ghost"];
+usage [label="usage ledger\ncached · uncached · unreported"];
+sys -> tools -> hist -> tail -> wire;
+wire -> prov;
+prov -> usage;
 }

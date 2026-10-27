@@ -1,7 +1,6 @@
 ---
-title: 'Redis in Production: Stop Calling Everything a Cache'
-description: 'Choose Redis patterns by failure semantics: caches, queues, Pub/Sub,
-  Streams, leases, eviction, and persistence each need a different recovery contract.'
+title: Two Redis Instances, Opposite Rules — How Ananta Uses Redis
+description: A cache that may forget everything and a store that must not, a Lua script that refuses stale quotes, a single-owner tick evaluator, and why our live streams are hints while SQL stays the truth.
 pubDate: '2026-11-10'
 tags:
 - redis
@@ -12,145 +11,88 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/redis-production-patterns-cache-queues-locks/
-heroImage: /blog-assets/covers/06-redis-production-patterns-cache-queues-locks.png
-heroImageAlt: 'Not everything is a cache — Redis in Production: Stop Calling Everything
-  a Cache; an editorial diagram cover by Shaun Furtado.'
-seoTitle: 'Redis Production Patterns: Caches, Queues, and Leases'
+seoTitle: 'Redis in Production: Caches, Streams, Leases, and Failure Contracts'
 series: Systems in Practice
 articleId: 6
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
+Redis does a lot of different jobs in Ananta: instrument search cache, latest-quote cache, a write-behind buffer for quotes, RQ queues, live tick streams for alerting, leases, and wake-up hints for server-sent events. For a while it did all of them in one instance with one configuration, which meant the configuration was wrong for most of them.
 
-The easiest way to make Redis confusing is to call everything stored in it a cache.
+## Split by what you're allowed to lose
 
-A cached search result can disappear and be rebuilt. A queued job represents work somebody expects to happen. A presence indicator can tolerate a brief mistake. An approval record may authorize a consequential action. These objects do not have the same failure semantics just because they fit into a key-value store.
+The fix was to stop thinking of Redis as one thing. In the Postgres deployment there are two instances with opposite rules:
 
-Before choosing a Redis data structure, I ask what losing, duplicating, delaying, or reading an old value would mean to the application.
+| | `redis-cache` | `redis` |
+|---|---|---|
+| Holds | instrument search results | queues, streams, leases, quote buffer |
+| Memory | 192 MB, `allkeys-lfu` | 512 MB, `noeviction` |
+| Persistence | none | AOF, `appendfsync everysec` |
+| If it's wiped | slower searches | lost work, unless SQL has it |
 
-That question is more useful than “Is Redis fast enough?”
+The cache can evict anything at any time, and losing all of it costs some latency. The other instance must never evict — an evicted queue entry is a run that silently never happens — so it refuses writes when full, and that's an alert, not a degradation. Putting both workloads under one `maxmemory-policy` means one of them is always configured wrong.
 
-## Give each category a failure contract
+## A cache key is part of the permission model
 
-For a disposable cache, the contract might be: a miss triggers recomputation, a stale value is acceptable for a short interval, and loss does not destroy user intent.
+The quote cache key looks like this:
 
-For coordination state, the contract might be: a lease has a bounded lifetime, ownership can be lost, and stale owners must be rejected at the write boundary.
+```text
+ananta:quote:v2:<db fingerprint>:<user>:<account>:<broker>:<EXCHANGE>:<SYMBOL>
+```
 
-For queued work, the contract might be: every accepted task has a durable application record, processing can be repeated, and completion is recorded independently of notification delivery.
+Every segment is URL-quoted, so a strange symbol can't break out of its tenant during a `SCAN`. The database fingerprint means two deployments accidentally sharing a Redis can't read each other's keys. User and account are in there because quotes come through a user's own broker connection, and one user's entitlement shouldn't become another user's cache hit. A comment in that module says what's deliberately *not* in the key or value: no broker credentials and no cross-account aliases.
 
-These distinctions should influence memory policies, persistence, permissions, monitoring, and recovery procedures. They may justify separate Redis instances or deployments. Separate logical databases alone do not give independent memory budgets, failure domains, or security boundaries.
+## Refusing older observations
 
-**Redis becomes a risky architecture when its speed is used to avoid deciding what the data means.**
+Quotes arrive from several places — a live feed, a REST poller, a batched fetch during a scheduled workflow — and they don't arrive in order. A naive `SET` lets a slow poller overwrite a newer tick with an older one. So writes go through one Lua script:
 
-## Cache keys are part of the authorization design
+```lua
+-- KEYS: quote, clock, pending, dirty   ARGV: json, ts
+local last = tonumber(redis.call("GET", KEYS[2]) or "0")
+if last > tonumber(ARGV[2]) then return 0 end      -- older than what we have
+redis.call("SET", KEYS[1], ARGV[1], "EX", 30)       -- latest quote, 30s
+redis.call("SET", KEYS[2], ARGV[2], "EX", 604800)   -- clock, 7 days
+redis.call("SET", KEYS[3], ARGV[1], "EX", 604800)   -- pending copy for SQL
+redis.call("ZADD", KEYS[4], ARGV[2], KEYS[3])       -- mark dirty
+return 1
+```
 
-Consider caching a generated report summary by document identifier alone.
+The pending copy and the dirty set are a write-behind buffer. A separate process flushes dirty quotes to SQL snapshots, and acknowledges with another script that only deletes the pending copy if its bytes haven't changed — so a flush can never erase an update that arrived while it was writing.
 
-That seems reasonable until different users have different access to the document, different redaction policies, or different versions. A correct cache hit can become an incorrect disclosure.
+Ingestion also rejects zeros and errors. A missing or zero price isn't a market observation, and caching it means an alert might fire on "price fell to 0".
 
-A key should represent the identity of the result: tenant or access scope where needed, resource version, transformation version, and parameters that change the output. Do not blindly include raw secrets or personal information in key names; keys can appear in logs and monitoring.
+The client side is deliberately impatient: a 0.3-second connect timeout, 0.5-second socket timeout, no retries, and a five-second local circuit after a failure. If Redis is slow, the caller still gets the direct broker result. Retrying a cache read only adds load to something that's already struggling.
 
-A hash of a low-entropy identifier is not necessarily anonymization. A cache key design is also a data-handling decision.
+## One evaluator, a fenced checkpoint
 
-For shared results, establish that sharing is allowed before optimizing for cross-user reuse. When authorization changes, know whether the cached value remains safe or needs invalidation. A time-to-live is not always an adequate revocation strategy.
+Live alerting reads ticks from per-account Redis Streams (`live:ticks:<user>:<account>:<broker>`, capped at about 2,000 entries). We don't use consumer groups. Exactly one evaluator process owns all the streams, through an owned lease with a 15-second TTL, and reads with plain `XREAD`.
 
-## Cache-aside has a stampede problem
+Progress is a checkpoint key per stream, written by a Lua script that refuses if the caller no longer holds the lease or if the offset would move backwards. Evaluator state is keyed by the owner's token, so an old process that wakes up after losing its lease can't corrupt the new owner's state.
 
-In a common cache-aside flow, the application reads a key, computes on a miss, and writes the result. When a popular key expires, many requests can all perform the same expensive computation.
+If the oldest entry still in the stream is newer than our checkpoint, the stream was trimmed past us and we've lost ticks. The evaluator treats that as a continuity break and starts a new epoch, so a rolling window or a "crossed above" condition isn't computed across a gap it can't see.
 
-A per-key single-flight mechanism can reduce duplication. Add jitter to expiry times so many keys do not become cold simultaneously. For some read paths, serving a stale value while one worker refreshes it can be a good product trade-off.
+<ArticleDiagram stem="06-redis-production-patterns-cache-queues-locks" alt="Fig. 1 — The cache instance can evict anything. The durable instance holds quotes, tick streams, and a dirty set that a flusher writes to SQL. A single lease-holding evaluator turns ticks into alerts." />
 
-But stale-while-revalidate is not universally appropriate. A stale help article is different from a stale permission decision. The value should carry a freshness timestamp or version when the user needs to understand its age.
+## Leases are an optimisation; SQL fences
 
-Also bound negative caching. Caching “not found” can reduce repeated misses, but it can conceal a newly created resource for the duration of the negative entry. A failed upstream request should not automatically become a long-lived “this does not exist” result.
+Every lease in the system is `SET NX EX` with a random token, renewed and released only by Lua compare-and-set scripts. A `GET` then `EXPIRE` from Python can extend the *next* owner's lease if yours expired in between.
 
-## Pub/Sub is a notification channel, not a recovery log
+A Redis lease still isn't a lock you can bet money on. A process can pause for longer than its TTL. So wherever correctness matters, SQL has the final say: runs carry an attempt and an epoch, and scheduled jobs are claimed with a compare-and-swap on the whole row. The scheduler's leader lease only decides who bothers to check. As one comment puts it, the database decides who owns a due row.
 
-Redis documents Pub/Sub as at-most-once delivery: a disconnected or failing subscriber can miss a message without later replay.[1]
+## Streams as hints, SQL as truth
 
-That can be entirely appropriate for a “something changed” hint when the client can fetch current state. It is a poor sole record for a job completion, an approval, or an event every consumer must eventually process.
+Chat events are written to SQL. Redis gets a much smaller `XADD` with only the sequence number, event type, and id — enough to wake up anyone streaming that run to a browser. If the `XADD` fails, we stop sending hints for 15 seconds and readers fall back to polling SQL.
 
-For a live interface, I like separating the two responsibilities. Durable application state answers “What is true now?” A Pub/Sub notification tells connected clients “You may want to refresh.” A reconnect triggers a fresh snapshot or a resumable event read.
+The SSE reader takes the stream tail *before* it reads from the database. Anything committed concurrently is then either in that read or in the next `XREAD`, so nothing slips between the two. SQL reads are capped at five per second per viewer, connections have a bounded lifetime so a reconnect re-checks authorisation, and a terminal status in SQL ends the stream even if the terminal event's hint was lost.
 
-The same principle prevents a common bug: a task finishes while the user's connection is down, and the interface remains stuck forever because the only completion message was ephemeral.
+Notification streams go further: every notification is re-read from SQL before it's sent, and old Redis payloads are never replayed.
 
-## Streams provide different mechanics, not magical guarantees
+## Things that went wrong
 
-Redis Streams consumer groups track delivered-but-unacknowledged entries. Consumers can acknowledge processed entries, and pending work can be inspected and reassigned.[2][3]
+**Blocking reads on threads.** The first SSE implementation used synchronous `XREAD` inside `asyncio.to_thread`. With a few dozen viewers, each five-second blocking read held a thread and competed with unrelated work. Moving to `redis.asyncio` fixed it. A later test with 50 notification viewers showed zero idle database transactions.
 
-That supports a recovery-oriented processing model, but the application still decides when an effect is safely complete. A worker can perform a write and crash before acknowledging. Another worker may then see the entry again.
+**An evaluator a minute behind.** In October the alert evaluator was running about 57 seconds behind the quote stream — roughly 35 ticks a second coming in against a capacity of about 37. Ticks older than 60 seconds are skipped on purpose, so we were close to silently missing alerts. The cause was re-parsing each matching workflow's rule definition, and re-querying instrument metadata, on every tick. Caching the parsed plan per saved revision, and instrument scope for an hour, brought it back to real time.
 
-Make the effect idempotent or reconcile it. Do not describe acknowledgment as creating exactly-once business behavior.
+**A lease held by an exception.** A connector without credentials raised an error before the code that releases its sync lease. The lease stayed held, no error was recorded, and the connector just stopped syncing. We found it on a live rollout. Now that path records the error and gives the lease back like any other failure.
 
-Consumer groups also change routing semantics. Consumers in the same group divide work. Separate groups can independently process the same stream. A group shared accidentally between a notification service and an audit processor can make each see only part of the events it expected.
-
-Retention and trimming deserve explicit review. A recovery plan that assumes old events exist is invalid when those events have already been removed. Pending entries are operational metadata, not a substitute for retaining the content and application state required to recover.
-
-<ArticleDiagram stem="06-redis-production-patterns-cache-queues-locks" alt="Redis roles separated by semantics: disposable cache, transient notifications, recoverable stream processing, and bounded coordination." />
-
-## A lease is not a force field
-
-A Redis lease can help coordinate which worker should act. It cannot stop an old worker from continuing after a pause unless the resource being modified checks current ownership.
-
-Use a unique owner token and an atomic compare-and-delete operation when releasing a lease; otherwise, an old owner can delete a lease acquired by someone else. Redis's distributed-lock documentation discusses the importance of ownership values and bounded validity.[4]
-
-For correctness-sensitive writes, also consider fencing: the protected resource rejects an operation from an older ownership generation. The generation must be allocated through a mechanism whose failure semantics satisfy the application. A counter that can roll back during failover is not automatically a sufficient fencing authority.
-
-There are workloads where occasional overlapping work is merely inefficient, and a best-effort lease is acceptable. There are others where overlap can corrupt state. The cost of the coordination mechanism should follow that distinction.
-
-This is why I avoid saying “Redis locks solve concurrency.” They solve a specific coordination problem under specific assumptions.
-
-## Memory policy can contradict the workload
-
-Redis offers eviction policies for handling configured memory limits.[5] The right policy depends on whether keys are disposable.
-
-An application cache can often evict and recompute. A queue-backed workload may not tolerate losing arbitrary queue or job keys. A `noeviction` policy avoids silent eviction but means memory pressure can turn writes into errors; those errors still need an application response and an operational alert.
-
-Separate workloads when their memory semantics conflict. Track key growth, memory usage, eviction counts where applicable, rejected operations, and the oldest unprocessed work. A healthy latency graph can coexist with unbounded retention growth.
-
-Do not rely on one vague “Redis is up” check. A reachable server can still be unsuitable for accepting new work.
-
-## Persistence is a recovery choice
-
-Redis supports snapshot and append-only persistence strategies, with different performance and recovery trade-offs.[6]
-
-Choose based on an explicit recovery point objective: how much recent state can the application afford to lose? Then test restoration. A persistence setting in configuration is weaker evidence than a successful recovery drill.
-
-For important user tasks, a separate durable task ledger can reduce dependence on queue metadata surviving perfectly. The queue becomes an execution mechanism that can be reconciled from accepted intent. That does not remove the need to operate Redis well; it makes the application's recovery story less brittle.
-
-Replication, persistence, and backups solve related but different problems. A replica is not automatically protection against an accidental deletion propagated to it. A backup that nobody has restored is an assumption with a file attached.
-
-## Keep the production boundary narrow
-
-Use network isolation, authenticated access, least-privilege command and key permissions where supported, and appropriate transport protection. Avoid public exposure. Do not let browsers or generated code connect directly to the coordination store.
-
-Bound client connection counts and configure timeouts for the operation being performed. A short timeout suitable for a cache read may be inappropriate for a blocking stream or queue operation. Retry policies should not amplify an already overloaded server.
-
-Keep slow, expensive administrative operations away from latency-sensitive paths. The precise command behavior depends on Redis version and dataset shape, so measure with the production-like workload rather than relying on the general claim that an in-memory database must be fast.
-
-## The review I would do before launch
-
-Take each Redis-backed feature and write one sentence for what happens when the key disappears, the value is stale, the client disconnects, and the operation executes twice.
-
-When the answer is “that cannot happen,” inspect the assumption. When the answer is “the user loses their request,” add a durable intent path. When the answer is “we refresh the snapshot,” an ephemeral notification channel may be exactly right.
-
-Good Redis architecture is not about avoiding important work. It is about matching each use to a failure contract you can actually defend.
-
-## Technical notes
-
-[1] [Redis Pub/Sub delivery semantics](https://redis.io/docs/latest/develop/pubsub/).
-
-[2] [Redis XREADGROUP](https://redis.io/docs/latest/commands/xreadgroup/).
-
-[3] [Redis XACK](https://redis.io/docs/latest/commands/xack/).
-
-[4] [Redis distributed-lock guidance](https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/).
-
-[5] [Redis key eviction](https://redis.io/docs/latest/develop/reference/eviction/).
-
-[6] [Redis persistence](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/).
-
-
-## Continue reading
-
-[Python RQ in Production: Simple Queues, Explicit Guarantees](/blog/python-rq-production-scaling-patterns/) · [Deterministic Infrastructure for AI Agents: Make Every Action Accountable](/blog/architecting-deterministic-infrastructure/)
+The common thread: each pattern in Redis needs a sentence saying what happens when its data disappears. If you can't write that sentence, it shouldn't be in Redis — or SQL should be holding the real copy.
