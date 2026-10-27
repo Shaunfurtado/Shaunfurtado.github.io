@@ -2,24 +2,24 @@ digraph topology {
 rankdir=TB;
 subgraph cluster_control {
   label="control network";
-  api [label="backend API\nauth · RBAC · SQL", class="key"];
+  api [label="API\nauth · permissions · SQL", class="key"];
   redis [label="Redis\nqueues · leases"];
-  workers [label="RQ workers\none owner per run"];
+  workers [label="workers\none owner per run"];
 }
-sbx [label="sandbox broker\n(docker socket)"];
+sbx [label="sandbox launcher\n(docker socket)"];
 subgraph cluster_plane {
-  label="browser-plane (internal: true)";
-  brw [label="browser broker\n(docker socket)"];
-  session [label="session container"];
-  squid [label="squid egress"];
+  label="browser network (internal)";
+  brw [label="browser launcher\n(docker socket)"];
+  session [label="browser session"];
+  proxy [label="egress proxy"];
 }
 net [label="internet", class="ghost"];
-api -> redis [label="enqueue run_id"];
+api -> redis [label="enqueue id"];
 redis -> workers;
-workers -> redis [label="lease renew 5s", style=dashed];
-workers -> sbx [label="HMAC grant"];
-workers -> brw [label="grant"];
+workers -> redis [label="renew lease", style=dashed];
+workers -> sbx [label="signed grant"];
+workers -> brw [label="signed grant"];
 brw -> session;
-session -> squid;
-squid -> net;
+session -> proxy;
+proxy -> net;
 }

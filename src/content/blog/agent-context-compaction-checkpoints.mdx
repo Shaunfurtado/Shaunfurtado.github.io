@@ -1,6 +1,6 @@
 ---
-title: Compaction in a Long-Running Agent Chat — The Trade-Offs We Actually Made
-description: When our agent summarises a conversation, what triggers it, which model writes it, what the summary may contain, why we chose availability over completeness, and how session search makes that choice survivable.
+title: 'Context Compaction for Long Agent Chats: Choosing What to Lose'
+description: Compaction in a long-running agent conversation is a trade between availability and completeness. Notes on triggers, summariser choice, what a summary may contain, and why a lossless log plus search makes a lossy summary acceptable.
 pubDate: '2026-12-01'
 tags:
 - ai-agents
@@ -11,76 +11,86 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/agent-context-compaction-checkpoints/
-seoTitle: 'Agent Context Compaction: Triggers, Summaries, and Session Recall'
+seoTitle: 'Agent Context Compaction: Triggers, Summaries, and Recall'
 series: Systems in Practice
 articleId: 9
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
-Analysts keep Ananta chats open for days. One conversation might cover a results season: pull quarterly numbers for five companies, compare margins, build a canvas, set an alert, come back two days later and ask "what did we conclude about the second one?"
+Picture an analyst who keeps one agent conversation open for a week. On Monday they pull quarterly numbers for five companies. On Tuesday they compare margins and build a chart. On Thursday they come back and ask, "what did we decide about the second one?"
 
-Until September our answer to long chats was a blunt cap: the last 20 turns, text only. It was predictable, and it forgot exactly the things people came back for. This post is about what replaced it, including one place where I deliberately chose the less safe option.
+The naive design keeps the last N turns and forgets everything else. It's predictable, it's cheap, and it forgets exactly the things people come back for. The other naive design keeps everything until the context window overflows, then fails. Compaction lives between those two, and I think the most useful way to design it is to be honest about what you're willing to lose.
 
-## When compaction runs
+## Trigger early, on a budget you can measure
 
-Budgets are in characters, not tokens, with a rough four-characters-per-token estimate for reporting. It's an approximation and the code says so. The defaults:
+Compaction should run before the window is full, not when a request is rejected. A threshold like "80% of the budget, minus a reserve for the reply" leaves room for the turn that's about to happen: tool results, a long answer, context injected at the end.
+
+Measure that budget in whatever unit you can compute everywhere. If you can't load a tokeniser for every model you support, characters with a conservative ratio work fine, as long as the same estimate is used for admission, for packing history, and for the final pre-dispatch check. A request that passes one estimate and fails another is worse than a slightly pessimistic estimate used consistently.
+
+The projection should include everything that goes into the call, not just the conversation. Injected context, a status block, and skill text all count, and they're easy to forget because they aren't "history".
+
+## Cut on turn boundaries
+
+Once you've decided to compact, the order matters:
+
+1. Keep a recent window raw. Walk backwards from the newest turn and keep whole turns — the user message, the assistant reply, and that turn's tool evidence together — until a budget is used. Never cut inside a turn. A tool result without the call that produced it, or a reply without its question, confuses models in ways that are hard to debug.
+2. Clear old tool output first. Raw tool results are usually the largest and least reusable part of old turns. Replace them with a short placeholder that tells the model they were cleared and how to get them back.
+3. Summarise what's left of the middle. Pass the previous summary in and ask for a merged one, rather than re-summarising from scratch each time. Summaries of summaries drift. Merges drift more slowly.
 
 ```python
-MODEL_INPUT_CHAR_BUDGET = 120_000
-COMPACT_RESERVE_CHARS = 12_000
-COMPACT_KEEP_RECENT_CHARS = 20_000
-COMPACT_SUMMARY_MAX_CHARS = 3_500
-COMPACT_ANXIETY_RATIO = 0.80
+def compact(turns, prior_summary, budget):
+    recent, older = split_recent(turns, budget.keep_recent)   # whole turns only
+    older = [strip_tool_output(t) for t in older]
+    summary = summarise(prior_summary, older)
+    return summary, recent
 ```
 
-Compaction triggers at 80% of the budget minus the reserve — before the window is full, not when it overflows. The projection includes the context hooks and status bar, since those count too. For self-hosted models the budget comes from the model's declared context window, minus reserved output, instructions, and the estimated size of the tool schemas.
+## Constrain what the summary may say
 
-## What it does
+A free-form summary is a second model generating claims about the first model's conversation. I'd give it fixed sections — symbols, facts, numbers, URLs, artefacts, blockers, open threads — and a few hard rules: list only facts present in the source, never invent prices or identifiers, never carry credentials or one-time codes forward. Then run a redaction pass over the output anyway, because "never include secrets" is an instruction, not a guarantee.
 
-1. **Keep recent turns raw.** Walk backwards from the newest turn and keep whole turns — user message, assistant reply, and tool digest together — until 20,000 characters are used. The cut always lands on a turn boundary, never inside one.
-2. **Clear older tool output.** Older tool digests are replaced with a placeholder telling the model that prior tool results were cleared and that `session_search` and `session_expand` can bring them back.
-3. **Summarise the middle.** A cheap model writes a structured summary of everything older than the recent window, with the previous summary passed in to be merged rather than rewritten from scratch.
+Low temperature helps. So does capping the summariser's own input, so a pathological conversation can't turn compaction into its own context overflow.
 
-The summariser prompt has fixed sections — Symbols, Facts, Numbers, URLs, Canvases, Blockers, Open threads — and a few hard rules: list only facts present in the source; never invent prices, ratios, holdings, URLs, or canvas ids; never include keys, tokens, or OTP codes. The output then goes through a regex pass that redacts anything shaped like a key, in case the rule didn't hold. Temperature is 0.1, and input to the summariser is capped at 48,000 characters.
+Store the summary next to the conversation, along with a marker of the first turn it doesn't cover. And leave the original events alone. Compaction should change what the model sees, never what the system remembers.
 
-The summary is stored on the session row with the id of the first run it didn't cover. It's prefixed with a marker saying it's a compressed summary not shown to the user. Audit events and the search index are never touched — compaction changes what the model sees, not what the system remembers.
+<ArticleDiagram stem="09-agent-context-compaction-checkpoints" alt="Fig. 1 — Under the threshold, a stored summary is reused. Over it, a policy-approved summariser merges older turns into a new summary. If that fails, the turn continues on the old summary or by dropping the oldest turns. The event log and search index are never compacted." />
 
-<ArticleDiagram stem="09-agent-context-compaction-checkpoints" alt="Fig. 1 — Under the threshold, the stored summary is reused. Over it, a policy-approved cheap model merges older turns into a new summary. If that fails, the run continues on the frozen summary or drops the oldest turns. The audit log and search index are never compacted." />
+## The summariser is subject to the same policy as the chat
 
-## Which model writes the summary
+It's tempting to send compaction to the cheapest model you have access to. A good default order is: an explicitly configured summariser, then any allowed model that's small, then the chat model itself.
 
-The summariser is chosen in order: an explicitly configured compaction model; otherwise an allowed model whose name suggests it's small (flash, mini, haiku, lite, and so on); otherwise the chat model itself.
+The important word there is *allowed*. If a workspace keeps certain content on a self-hosted model, compaction can't become the side door that sends a summary of that content to a cheaper cloud model. A summary of confidential material is confidential material. Run the summariser request through the same inference policy check as any other call, and fall back to a less ideal model rather than bypass the check.
 
-Every candidate has to pass the same inference policy check as a normal chat call. That closed a review finding in October. If a workspace is set to keep confidential content on self-hosted models, compaction mustn't be the side door that sends a summary of that content to a cloud model just because it's cheaper. A summary of confidential material is still confidential material.
+## Availability or completeness — pick one on purpose
 
-## The choice I made differently from the textbook
+The textbook rule is that a failed or empty summary must never advance history. If you couldn't summarise the older turns, you shouldn't drop them.
 
-The textbook answer — I wrote a version of it myself in an earlier draft of this post — is that a failed or empty summary should never advance history. If you can't summarise the older turns, you shouldn't drop them.
+I've come round to thinking that's the wrong default for an interactive product. Consider what it means in practice. The summariser times out after 45 seconds. Under the textbook rule, the user's turn now either fails or runs with a context that's still too large, and every following turn hits the same wall. The conversation is effectively dead until someone intervenes.
 
-Ananta does drop them. If the summariser returns nothing and a previous summary exists, we keep the frozen previous summary and still move the recent window forward. If the summariser throws, we use the frozen summary plus recent turns. With no previous summary, we drop the oldest turns until things fit, and record `fallback: drop_oldest` in the audit log. In each case, turns between the old summary and the new recent window disappear from the model's view.
+The alternative is to keep going. If the summariser returns nothing but there's a previous summary, keep the old summary and still move the recent window forward. If it throws, do the same. If there's no previous summary at all, drop the oldest turns until things fit, and record that you did. In every case some turns disappear from the model's view, and the conversation stays usable.
 
-We chose that because the alternative is worse for the person using it. A summariser timeout (we allow 45 seconds) would otherwise fail their chat turn, or leave every future turn too large to send. Compaction never fails a run. It's lossy, the run proceeds, and the loss is recoverable because nothing is deleted — the agent can search for what fell out.
+That's a loss of completeness in exchange for availability, and I think it's the right trade *only if* the loss is recoverable. Which brings me to the half of compaction people tend to skip.
 
-I'm comfortable with that trade because of the next section. Without it, I wouldn't be.
+## Recall makes lossy summaries survivable
 
-## Recall is the other half
+If everything that leaves the model's view is still in an append-only event log, and the agent has a way to search it, then compaction is a cache eviction rather than a deletion.
 
-Two tools let the agent reach back into history: `session_search` and `session_expand`. Search uses SQLite FTS5, or a search table on Postgres, with optional hybrid retrieval that fuses a small embedding model's results with full-text results using reciprocal rank fusion. Embeddings are off by default. If they fail, search falls back to full text alone.
+Two tools are enough: search over the conversation's events (full-text search with SQLite FTS5 or Postgres works well; you can fuse in an embedding retriever with reciprocal rank fusion if you need it), and expand, which returns a small window around a hit. Keep both lean by default. Search should return a handful of short hit cards, not windows of context. Expand should have a hard radius and character cap. Tell the agent to expand at most a couple of times per turn, and to re-fetch the original source if what it found is still truncated.
 
-The defaults are lean on purpose. Search returns five hit cards with no surrounding context. Expanding a hit allows a radius of at most eight events and 6,000 characters. Each indexed event is capped at 4,000 characters, with secrets stripped before indexing. The tool's description tells the agent to expand at most twice per turn, and to re-fetch the original source if the result is still truncated.
+The details that made search useful in my experiments were boring ones. Exclude lifecycle noise ("response completed", "run started") from the index, or the top hits will be markers rather than evidence. Rank hits from the current turn lower. Add stop words. Strip secrets before indexing. Scope search to the current conversation or one explicitly named conversation the user owns, and make zero hits say "not found here", not "doesn't exist".
 
-The first version of recall wasn't good. Search windows came back full of `[response_completed]` placeholders, and queries matched bare `run_started` events. We changed the default window to zero, made expand return only evidence-bearing events, ranked hits from the current run lower, and added stop words to the full-text index. Search also stays in its lane: this chat, or one explicitly named session the user owns. Results say that zero hits don't prove something isn't in another session.
+There's one more rule I'd keep: facts from a summary are weak evidence. If a number from the summary is going into today's answer, the agent should expand the original or fetch it again. A summary tells you where to look. It shouldn't be quoted as a source.
 
-One more thing came out of the design discussion: summary facts are *weak evidence*. If a number from the summary is going into the current answer, the agent is expected to expand the original or fetch it again. A summary is a pointer to where to look, not a source to quote.
+## Some runs shouldn't see history at all
 
-## Not every run should see history
+Compaction quality isn't the only way history goes wrong. A scheduled analysis that inherits an earlier chat can blend what someone *discussed* with what the data *says*. A recurring report about one company can pick up a comparison with a different company that someone ran by hand the week before.
 
-The worst compaction-related bug we had wasn't about compaction quality. In early October a scheduled analysis overstated a block trade, because scheduled runs were inheriting older conversation answers and workflow-editing chatter through history and its summary. The run was mixing what someone had discussed with what the data said.
+For scheduled and triggered runs, I'd start with zero prior turns and let the run read what it needs from current, saved records. For "inspect this saved thing" runs, pass only the last message or two, labelled as being for resolving references like "it" or "that alert". Context isolation is often a bigger win than better summarisation, in both correctness and cost.
 
-Scheduled and alert-triggered runs now execute with no prior turns at all. On that workflow, context went from 12 turns, 197 tool projections, and about 154,000 characters to zero turns and about 36,000 characters. Cost dropped too, though that wasn't a controlled comparison and I don't quote it as one. A few days later we found workflow compaction had dropped a workflow's active period, so the agent missed which days it was eligible to run. Schedule, calendar eligibility, and delivery policy are now kept separately from the large targeting payload, so they survive even when that payload is trimmed.
+Structured records need care too. If a saved workflow has a schedule, a calendar of eligible days, and a large targeting payload, compacting it as one blob can drop the schedule to save the payload. Keep the small, decision-relevant fields separate from the bulky ones so they survive trimming.
 
-## What I'd still change
+## What I'd still worry about
 
-Coverage could be tighter. Under the threshold, the stored summary is prepended to the normal recent history, and depending on where the last compaction landed, the two can overlap a little. It costs a few characters, not correctness. We also count characters instead of tokens, which is fine for one provider and loose for others.
+Overlap: if the stored summary is prepended to the recent window, and the window has moved since the last compaction, the two can cover some of the same turns. That wastes a few hundred characters, not correctness, but it's worth tracking. Character-based budgets are fine for one provider and loose for others. And an agent that never searches its history will behave exactly like one that has no history, so it's worth checking in evaluations that it actually reaches for search when a question refers to something old.
 
-What I wouldn't change is the split: an audit log that keeps everything, a model view that keeps very little, and a search tool between them. That split is what lets the summariser be imperfect.
+The part I'm confident about is the split: an event log that keeps everything, a model view that keeps little, and a search tool between them. With that in place, the summariser is allowed to be imperfect.

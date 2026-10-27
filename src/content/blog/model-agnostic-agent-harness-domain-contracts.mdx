@@ -1,6 +1,6 @@
 ---
-title: Making an Agent Harness Model-Agnostic Without Pretending Models Are Interchangeable
-description: How Ananta runs the same agent across OpenRouter, Anthropic, and self-hosted OpenAI-compatible endpoints — one wire format, per-model capability records, refusal instead of silent fallback, app-owned retries, and domain rules that live in typed code.
+title: Model-Agnostic Doesn't Mean Models Are Interchangeable
+description: What it takes to run one agent across hosted and self-hosted models — a common wire format, per-model capability records, refusal instead of silent fallback, confidentiality that follows content, and domain rules that live in typed code rather than prompts.
 pubDate: '2027-01-05'
 tags:
 - ai-agents
@@ -17,87 +17,93 @@ articleId: 16
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
-Our clients don't all want the same model. Some are happy with whatever OpenRouter routes to. Some want Anthropic. Some — especially anyone handling client portfolios under confidentiality rules — want certain content to stay on a model they host themselves. Ananta has to run the same agent, with the same tools and the same guarantees, across all three.
+Sooner or later, an agent product gets asked to run on a different model. Usually it's for an ordinary reason. One customer standardises on Anthropic. Another is happy with whatever an aggregator like OpenRouter routes to. A third has confidentiality obligations and wants certain material to stay on a model running on their own hardware, behind vLLM or Ollama.
 
-"Model-agnostic" is easy to claim and hard to mean. Here's what it means for us, and where we deliberately stopped.
+"Model-agnostic" is easy to claim and harder to mean. An adapter that converts one request format to another gets you about a fifth of the way. The rest is deciding what the system does when a model *can't* do what the agent needs — and making sure it never pretends otherwise.
 
-## One wire format
+## One wire format is the easy part
 
-Every provider goes through the `openai` SDK's Chat Completions shape, and the agent loop runs on the OpenAI Agents SDK. OpenRouter is the main path. Anthropic was added in May. Custom OpenAI-compatible endpoints — vLLM, an internal gateway, anything that speaks the protocol — were added in October.
+Pick one request shape and make every provider speak it. The OpenAI-compatible Chat Completions format is the obvious choice: most aggregators and self-hosted servers already expose it, and the major agent SDKs can be pointed at any compatible base URL. Native APIs can sit behind a thin translation layer.
 
-Not every compatible endpoint can stream, so there's a small adapter that turns a non-streaming response into synthetic stream events. The rest of the harness doesn't need to know.
+There will be gaps. Some compatible endpoints can't stream. A small adapter that turns a complete response into synthetic stream events keeps the rest of the harness from caring. Some return tool calls in slightly different shapes. Normalise them at the edge, once.
 
-That's the easy 20%. The rest is about what the wire format *doesn't* tell you.
+That's the plumbing. It's necessary, and it isn't the hard part.
 
-## Each model declares what it can do
+## Each model should declare what it can do
 
-Every configured model has a capability record:
+The hard part is that models genuinely differ, and the harness has to know how. I'd give every configured model an explicit capability record rather than inferring capability from its name:
 
 ```python
-class ModelCapabilities(BaseModel):
+class Capabilities(BaseModel):
     context_window: int = 32_768
-    supports_tools: bool
-    supports_streaming: bool
-    supports_vision: bool
+    tools: bool
+    streaming: bool
+    vision: bool
 ```
 
-Before any request is sent, a dispatch gate checks it against that record and the workspace's policy. It refuses — with a message a person can act on — if the request has tools and the model doesn't support them, asks for streaming the endpoint can't do, includes images for a non-vision model, exceeds the context window once reserved output is counted, uses a provider or model that isn't on the allowlist, sends confidential content to an endpoint that isn't self-hosted, or uses third-party inference when the workspace has turned it off. If the endpoint configuration changes in the middle of a run, the run stops and asks for a new one.
+Then put a gate at dispatch — the last point before a request leaves the process — that checks every request against that record and the workspace's policy:
 
 ```python
-if body.get("tools") and not caps.supports_tools:
-    raise InferencePolicyRefusal("This model does not support tools.")
-if estimate_tokens(body) + max_output > caps.context_window:
-    raise InferencePolicyRefusal("This request exceeds the model's context window.")
-if run.confidential and not endpoint.self_hosted:
-    raise InferencePolicyRefusal(confidential_refusal(endpoint))
+def check(request, model, policy):
+    if request.tools and not model.caps.tools:
+        refuse("This model doesn't support tools.")
+    if estimate(request) + request.max_output > model.caps.context_window:
+        refuse("This request is larger than the model's context window.")
+    if request.confidential and not model.endpoint.self_hosted:
+        refuse("Confidential material can't be sent to this endpoint.")
+    if model.id not in policy.allowed_models:
+        refuse("This model isn't enabled for this workspace.")
 ```
 
-The important word is *refuses*. There's no silent fallback to another model. If a confidential run can't go to the self-hosted endpoint because it's down, it doesn't quietly go to the cloud. And a model that can't do tools isn't handed a degraded, tool-less version of the agent as though that were the same product.
+Add the obvious others: no images to a non-vision model, no streaming from an endpoint that can't, and no third-party inference at all when the workspace has turned it off. If the endpoint configuration changes in the middle of a run, stop the run and ask for a new one rather than finishing on a different model than it started.
 
-## Confidentiality follows the content
+## Refuse; don't fall back
 
-A run becomes confidential because of what it *retrieved*, not what it's called. Once confidential content is in a run, the label follows it into follow-ups, summaries, child runs, and canvases. Names, counts, and empty search results don't make a run confidential. That stickiness is why the compaction summariser has to pass the same policy check as the chat model — otherwise summarising would be a way to launder confidential text to a cheaper cloud model.
+The important word in that gate is *refuse*. There's a strong temptation to "fall back" instead: the self-hosted endpoint is down, so quietly use the cloud one; the model can't call tools, so run a tool-less version of the agent and hope the answer is close enough.
 
-"Self-hosted" is something an admin declares about an endpoint. It isn't network attestation, and the docs say so. A private proxy in front of a cloud model is third-party inference, whatever its hostname. Custom endpoints have their own rules: external endpoints must use HTTPS; plain HTTP and private addresses are only allowed for endpoints declared self-hosted; cloud metadata and link-local addresses are blocked, including when they're hidden inside an IPv6 address; the resolved address is checked before TLS; redirects aren't followed; and changing an endpoint's origin means entering the API key again.
+For confidential material, falling back to a cloud model is a data leak with extra steps. For capabilities, a tool-less agent isn't a degraded version of the product. It's a different product that happens to have the same name. In both cases the honest behaviour is a clear refusal that a person can act on: switch model, wait for the endpoint, or narrow the request.
 
-<ArticleDiagram stem="16-model-agnostic-agent-harness-domain-contracts" alt="Fig. 1 — The agent loop runs through harness wrappers and a dispatch gate that checks each request against the model's capabilities and the workspace's policy before any provider sees it. Tool results pass through typed domain validators." />
+## Confidentiality should follow the content
 
-## Token counts without a tokeniser
+The policy question "is this run confidential?" is subtler than it looks. I'd make it depend on what the run *retrieved*, not what it's called or who started it. Once confidential content enters a run, the label sticks and follows it into follow-up turns, summaries, delegated child tasks, and generated artifacts. Metadata — names, counts, an empty search result — shouldn't trigger it.
 
-We can't load a tokeniser for every model a client might plug in. So we estimate at three bytes per token — four is typical, and three leaves a 33% margin — and use that *same* estimate everywhere: admission, packing history, and the dispatch gate. If the three disagreed, a request could pass admission and then fail at dispatch.
+That stickiness has a consequence that's easy to miss. Any auxiliary model call has to pass the same gate as the main one. A context summariser that "just uses a cheaper cloud model" is a perfect side door for confidential text. (More on that in [the compaction post](/blog/agent-context-compaction-checkpoints/).)
 
-That estimate drives a real product decision. The full tool catalogue plus instructions is about 50,500 estimated tokens. A model with a 64k window is the minimum we'd call comfortable, and 128k is preferred. A 32k model gets a reduced catalogue and loads further tools on demand, eight at a time. It works, but it's a different, slower agent, and we tell the admin that rather than pretend otherwise.
+Be honest about what "self-hosted" means, too. It's a declaration an admin makes about an endpoint, not something the harness can attest over the network. A private proxy in front of a cloud model is third-party inference, whatever its hostname says. Custom endpoints deserve their own guard rails: HTTPS for anything external; plain HTTP and private addresses only for endpoints declared self-hosted; cloud metadata and link-local addresses blocked, including when they're hidden inside IPv6 forms; the resolved address checked before the TLS handshake; redirects not followed; and changing an endpoint's origin should require entering the key again, so a pasted URL can't quietly redirect saved credentials.
+
+<ArticleDiagram stem="16-model-agnostic-agent-harness-domain-contracts" alt="Fig. 1 — The agent loop runs through harness wrappers and a dispatch gate that checks every request against the model's declared capabilities and the workspace policy before any provider sees it. Tool results pass through typed domain validators that don't depend on the model." />
+
+## Counting tokens without a tokeniser
+
+If customers can plug in arbitrary models, you can't load a tokeniser for each one. Estimate conservatively instead — dividing bytes by three, rather than the more typical four, leaves a reasonable margin — and use *the same* estimate everywhere: admission, history packing, and the dispatch gate. If those three disagree, a request can pass admission and then fail at dispatch, which is a miserable bug to track down.
+
+The estimate also forces a product conversation. A large tool catalogue plus instructions can easily take tens of thousands of tokens before the user says anything. On a model with a 32k window, the agent has to start with a reduced set of tools and load others on demand, and it will be slower and more fragile. Tell the admin that when they configure the model, rather than letting them find out from users.
 
 ## The harness owns retries and quirks
 
-The provider SDK runs with `max_retries=0`. Our retry policy classifies failures — transient transport, rate limited, quota exhausted, unknown tool, repeated tool call, unpaired tool results, unsupported parameter, policy refused — and treats each differently: 2-second base delay, 12-second maximum, a 60-second cap on any delay the server asks for, and a 75-second limit on an idle stream. That came from an SDK honouring an hours-long `Retry-After` inside a job with a ten-minute timeout.
+Run the provider SDK with its own retries turned off and own them in the harness. Classify failures — transient transport, rate limited, quota exhausted, unknown tool, repeated tool call, tool results without matching calls, unsupported parameter — and treat each differently. Cap any server-requested delay. An SDK that faithfully honours a multi-hour `Retry-After` inside a job with a ten-minute timeout is a classic way to get a spinner followed by an unexplained failure.
 
-Model quirks are handled in code, not in prompts. Some models write tool calls as JSON in their reply text instead of making a real call, so for canvas tools there's a recovery path that detects and executes those. Planning-only mode is enforced by wrapping the tools so they refuse, not by asking the model nicely. A truncated completion is recorded from the wire receipt and either continued or marked incomplete.
+Handle model quirks in code, not in prompts. Some models write a tool call as JSON in their reply text instead of making a real call. A narrow, well-tested recovery path for that is better than a paragraph of pleading in the system prompt. If a mode means "no tools this turn", enforce it by wrapping the tools so they refuse. A truncated completion should be detected from the response and either continued or clearly marked incomplete, never presented as a finished answer.
 
-## Domain rules live in typed modules
+## Put domain rules where models can't negotiate
 
-The model can vary. The rules about money can't. So they don't live in the prompt.
+The model can vary. The rules about money shouldn't. So they don't belong in the prompt, where every model interprets them a little differently. They belong in typed code that every model's output passes through:
 
 ```python
-class FinanceMetricBinding(BaseModel):
+class BoundFigure(BaseModel):
     symbol: str
     scope: Literal["standalone", "consolidated"]
     period: str
-    metric: Literal["revenue", "pat", "eps", "operating_profit"]
-    unit: str
-    multiplier: Literal[1, 4] = 1   # 4 only for hypothetical calculator EPS
+    metric: Literal["revenue", "net_profit", "eps"]
+    annualised: bool = False   # only allowed in hypothetical scenarios, and disclosed
 ```
 
-Standalone and consolidated figures are never mixed. Annualising quarterly EPS by four is allowed only in a hypothetical calculator, and it's disclosed as an assumption. A cited source has to be a URL the run actually retrieved or a receipt for a tool event the run owns. The research delivery gate holds back a report with named reasons when coverage, freshness, or pagination can't be verified. All of that is code that any model's output passes through. When we switch models, none of it changes.
+Never compare standalone with consolidated figures. Only annualise quarterly earnings in an explicitly hypothetical calculation, with the assumption disclosed. A cited source must be something the run actually retrieved. A report whose coverage or freshness can't be verified is held back with a stated reason. When you switch models, none of this changes, and that's exactly the property you want.
 
-Typed extensions work the same way. A calculator extension declares one host capability, sandbox execution, with a pinned implementation file. The API process never imports extension code. An extension only attaches if it's enabled *and* passed its fixture evaluation. If the sandbox isn't healthy, extension tools disappear rather than fail halfway.
+Extensions follow the same principle. If users can add their own calculators, run them only in the sandbox, never import their code into the API process, attach them only when they're enabled *and* have passed their own tests, and remove them from the tool list entirely when the sandbox is unhealthy, rather than letting calls fail halfway through.
 
-## Where we stopped, honestly
+## Be honest about what's been proven
 
-Two things I want to be clear about.
+Two cautions. First, testing against a synthetic OpenAI-compatible server proves the plumbing, not the model. Before claiming support for a specific self-hosted stack, run the real agent against it, with real tools, at real context sizes. Second, the same discipline applies to non-model dependencies. A keyless search endpoint that starts returning bot challenges can send an agent into retry loops just as effectively as a flaky model. Pin versions, check what each dependency actually returned, and refuse clearly when it can't do the job.
 
-First, the self-hosted endpoint path was merged in late October without a live test against a real self-hosted model. That was a deliberate owner decision; what we tested is a synthetic OpenAI-compatible server that behaves like one. I'm not going to claim it's proven with vLLM or Ollama until it is.
-
-Second, search. In October DuckDuckGo began answering our server with a bot challenge. The harness escalated to the browser session, which was stale, and agents went round in retry loops. We added commercial search APIs, removed them the same day after discussion, and settled on a keyless metasearch package pinned to an exact version. Not every dependency is a model, but the rule is the same: pin it, check what it actually returned, and refuse clearly when it can't do the job.
-
-Model-agnostic, for us, doesn't mean any model gives the same result. It means any model gets the same contract — the same refusals, the same evidence rules, the same domain checks — and when one can't meet it, the system says so instead of degrading quietly.
+To me, model-agnostic doesn't mean every model gives the same answer. It means every model gets the same contract — the same refusals, the same evidence rules, the same domain checks — and when one can't meet it, the system says so instead of degrading quietly.

@@ -1,16 +1,14 @@
 digraph harness {
 rankdir=TB;
-loop [label="agent loop\nAgents SDK"];
-wrap [label="harness wrappers\npermissions · retries · scope"];
+loop [label="agent loop"];
+wrap [label="harness wrappers\npermissions · retries"];
 gate [label="dispatch gate\ncapabilities ∩ policy\nrefuse, never fall back", class="key"];
 client [label="OpenAI-compatible\nclient"];
-or [label="OpenRouter"];
-an [label="Anthropic"];
+hosted [label="hosted provider\nor aggregator"];
 self [label="self-hosted\nendpoint"];
-dom [label="domain validators\nbindings · delivery gate"];
+dom [label="domain validators\ntyped, model-independent"];
 loop -> wrap -> gate -> client;
-client -> or;
-client -> an;
+client -> hosted;
 client -> self;
 wrap -> dom [label="tool results", style=dashed];
 }

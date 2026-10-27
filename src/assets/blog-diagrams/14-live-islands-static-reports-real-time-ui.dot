@@ -1,14 +1,14 @@
 digraph islands {
 rankdir=TB;
-answer [label="agent answer\n{{ltp:NSE:SYM|…}}"];
+answer [label="model answer\nwith closed tokens"];
 md [label="token → relative link\nsurvives sanitiser"];
-island [label="LiveLtpIsland ×N"];
-prov [label="one provider per chat\ndeduped demand", class="key"];
+island [label="price components ×N"];
+prov [label="one provider\nper conversation\ndeduped demand", class="key"];
 ws [label="WebSocket\nsnapshot, then ticks"];
-redis [label="Redis price streams", class="ghost"];
-frame [label="canvas iframe\npostMessage"];
+feed [label="price streams", class="ghost"];
+frame [label="sandboxed canvas\nvia postMessage"];
 answer -> md -> island -> prov;
-prov -> ws [label="subscribe ≤5s"];
-redis -> ws;
-prov -> frame [label="aw-ltp", style=dashed];
+prov -> ws [label="subscribe"];
+feed -> ws;
+prov -> frame [label="forward ticks", style=dashed];
 }

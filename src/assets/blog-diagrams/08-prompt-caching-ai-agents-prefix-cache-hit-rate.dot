@@ -5,11 +5,11 @@ subgraph cluster_prefix {
   sys [label="frozen system prompt"];
   tools [label="tool list\nappend-only order"];
 }
-hist [label="history /\ncompaction summary"];
-tail [label="trailing block\nclock · hooks · skills"];
-wire [label="wire layer\ncomponent hashes\ncache key hint", class="key"];
+hist [label="history\nor stored summary"];
+tail [label="trailing context\ntime · data · procedures"];
+wire [label="wire layer\ncomponent hashes", class="key"];
 prov [label="provider", class="ghost"];
-usage [label="usage ledger\ncached · uncached · unreported"];
+usage [label="usage record\ncached · uncached\nunreported"];
 sys -> tools -> hist -> tail -> wire;
 wire -> prov;
 prov -> usage;

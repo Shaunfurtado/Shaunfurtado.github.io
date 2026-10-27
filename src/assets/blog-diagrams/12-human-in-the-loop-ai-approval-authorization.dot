@@ -1,11 +1,11 @@
 digraph approval {
 rankdir=TB;
 agent [label="agent proposes\na write"];
-prep [label="prepare\nschema · canonical JSON\nidempotency key"];
+prep [label="prepare\nschema · canonical form\nidempotency key"];
 ask [label="approval card\nno default"];
-human [label="person decides\nCAS pending → confirmed", class="key"];
-recheck [label="fresh permission +\nbarrier check"];
-send [label="CAS → sending\nact(idempotency key)"];
+human [label="person decides\ncompare-and-swap", class="key"];
+recheck [label="fresh permission\n+ barrier check"];
+send [label="claim and send\nwith idempotency key"];
 rcpt [label="receipt + audit"];
 agent -> prep -> ask -> human -> recheck -> send -> rcpt;
 rcpt -> agent [label="told afterwards", style=dashed];

@@ -1,6 +1,6 @@
 ---
-title: Letting an Agent Build UI Without Letting It Write Our Frontend
-description: How Ananta's agent composes canvases from a typed WorkspaceSpec, why an invalid spec is a result rather than an error, how finance tables cite their sources, and what happened when the HTML escape hatch stripped a calculator's script.
+title: Let the Model Describe the Interface, Not Write It
+description: An argument for agent-generated UI built on a closed, typed spec — data by reference, no styling or handlers in props, invalid specs returned as repairable results, sources that must be real, and a tightly fenced HTML escape hatch.
 pubDate: '2026-12-22'
 tags:
 - ai-agents
@@ -11,87 +11,98 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/model-agnostic-ai-artifacts-ui-contracts/
-seoTitle: 'AI-Generated UI: Typed Specs, Source Ledgers, and Safe HTML'
+seoTitle: 'Agent-Generated UI: Typed Specs, Repairable Errors, and Safe HTML'
 series: Systems in Practice
 articleId: 13
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
-The adaptive workspace is the part of Ananta people demo first. Ask for "a desk for my IT holdings with a results calendar", and the agent lays out a holdings table, a price chart, an earnings comparison, and some notes on a grid. Ask it to move the chart or add an option chain, and it edits the layout.
+Ask an agent for "a dashboard of my tech holdings with an earnings calendar", and there are two broad ways to get one.
 
-What it never does is write React, HTML, or CSS for that desk. It writes a spec, and our code decides what that spec is allowed to mean.
+The first is to let the model write the interface: a React component, a block of HTML and CSS, maybe a little script for interactivity. It's impressive in a demo. It's also a frontend you didn't write, rendering numbers you can't trace, with behaviour nobody reviewed, regenerated slightly differently every time.
 
-## The spec
+The second is to give the model a vocabulary. It doesn't write the dashboard. It *describes* one, in a small typed language your own code knows how to render. I think the second is the right default for almost any product that people rely on, and this post is about what that language needs in order to hold up.
 
-A `WorkspaceSpec` is a Pydantic model with `extra="forbid"` on every level. Version 1 has a 12-column grid, components at most 24 rows tall, and about 22 allowlisted component types: `holdings-table`, `quote-chart`, `option-chain`, `notes-block`, and so on.
+## A closed spec, validated twice
+
+The spec should be boring and strict. In Python I'd reach for Pydantic with `extra="forbid"` at every level, so a field the model invents is an error rather than something silently ignored:
 
 ```python
-class WorkspaceComponent(BaseModel):
+class Panel(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(pattern=r"^[a-z][a-z0-9-]*$")
-    type: ComponentType              # one of the allowlisted types
-    position: GridPosition           # x + w <= 12, h <= 24
-    data: DataRef | None = None      # {tool, params}, not a dataset
-    props: dict[str, Any] = {}
-    actions: list[ActionName] = []   # allowlisted semantic actions
+    kind: PanelKind                  # a fixed enum: table, chart, notes, ...
+    at: GridSlot                     # x + w <= 12 on a 12-column grid
+    source: DataRef | None = None    # where the data comes from
+    options: dict[str, Any] = {}
+    actions: list[ActionName] = []   # named behaviours the frontend implements
 ```
 
-Two decisions make this safe.
+A fixed list of panel kinds. A grid with simple arithmetic rules. Ids that are safe to use as keys and anchors. Then validate it again in the frontend, against the same rules, and fail closed there too. Two validators sound redundant until one of them gets a bug.
 
-**Data is a reference, not a payload.** A component's `data` field names an allowlisted data tool and its parameters — "holdings for this account", "quotes for these symbols". The frontend fetches it through the normal authenticated API. The model can't paste numbers into a table and have them look like broker data. Parameters with secret-shaped keys (`api_key`, `password`, `pin`, `totp`, `token`) are rejected.
+Be forgiving where models are predictably bad and strict where they're dangerous. Models are poor at grid arithmetic, so overlapping panels can simply be packed downward. They are also very willing to put `style`, `className`, `onClick`, `href`, `src`, or `dangerouslySetInnerHTML` into an options object if you let them. Forbid those keys outright. Styling belongs to the design system. Behaviour belongs to a short list of named actions — "refresh", "open details", "export" — that your frontend implements and your security review has seen.
 
-**Props can't carry code or styling.** `className`, `style`, `css`, `dangerouslySetInnerHTML`, `innerHTML`, `jsx`, `children`, `href`, `src`, and `onClick` are forbidden. Behaviour goes through named actions the frontend implements. The frontend also validates the spec again and fails closed on the same rules, so a bug on one side doesn't open the other.
+## Data by reference, never by value
 
-Overlapping widgets aren't rejected — models are bad at grid arithmetic — they're packed downward.
+This is the decision that matters most, and it's easy to get wrong.
 
-## An invalid spec is a result, not an error
+If a table panel carries its own rows, the model can put any numbers it likes in them, and they'll render with exactly the same authority as real data. So a panel shouldn't carry data at all. It carries a *reference*: which allowlisted data source to call, with which parameters.
 
-The agent edits the canvas with `compose_surface` (whole layout) and `patch_surface` (replace, add, remove, duplicate, move, update, retitle). It can dry-run with `workspace_validate_spec`.
+```json
+{ "source": { "from": "holdings", "params": { "account": "primary" } } }
+```
 
-When a compose or patch is invalid, the tool doesn't raise:
+The frontend resolves that through the normal authenticated API, as the current user, with their permissions. The model chooses *what* to show. It never gets to supply the numbers. Reject parameters whose keys look like secrets — `api_key`, `password`, `token`, `pin` — because sooner or later a model will try to be helpful with one.
+
+## An invalid spec is a result, not an exception
+
+The tool the agent uses to apply a spec will often receive something invalid. How it says so changes the agent's behaviour a lot.
+
+If an invalid spec raises an error, the agent tends to read it as "this tool is broken" and do something drastic: retry wholesale, switch approach, or apologise and stop. If the tool returns a normal result that says the change wasn't applied and lists exactly what was wrong, the agent treats it as feedback and fixes the field.
 
 ```python
 return {
-    "ok": True,
     "applied": False,
-    "valid": False,
-    "validation": {"errors": errors},
-    "hint": "Fix the listed fields once and retry.",
+    "errors": [
+        {"path": "panels[2].at.w", "problem": "x + w must be <= 12"},
+        {"path": "panels[4].options.style", "problem": "styling is not allowed"},
+    ],
+    "hint": "Fix these fields and resubmit once.",
 }
 ```
 
-We made that change in August so the model could correct itself without a retry loop. An exception looks to the agent like the tool is broken, and it tries something drastic or gives up. A result with `applied: false` and specific errors looks like feedback, and it fixes the field. Every applied change is saved as a versioned snapshot, and restoring a canvas uses the latest snapshot, not a replay of the chat.
+The error messages themselves are part of the interface. A failure that repeats the entire rulebook every time is surprisingly hard for a model to act on. One that names the failing field, and where relevant lists the valid choices it actually has, usually gets fixed on the next attempt. Pair that with a dry-run tool so the agent can check a large change before applying it.
 
-Canvas tools only exist when the instance has the adaptive workspace enabled and the run is a workspace run. The classic chat page never sees them.
+Every applied change should become a versioned snapshot. Restoring the view later should load the latest snapshot, not replay the conversation and hope the model makes the same choices again.
 
-## Finance tables have to cite things
+<ArticleDiagram stem="13-model-agnostic-ai-artifacts-ui-contracts" alt="Fig. 1 — The model proposes a spec through a tool. Validation either returns repairable errors or checks sources and saves a versioned snapshot, which the product's own components render." />
 
-For research output there's a typed finance canvas: earnings comparison, catalyst timeline, movers and breadth, scenario calculator, evidence table, and changes. Tables have 1–8 columns, at most 40 rows, at most 20 sources, and cells of at most 500 characters. Every row points at a source index.
+## Sources have to be real
 
-A source has to be one of three things: an exact HTTP(S) URL that was actually retrieved in this run, a saved document, or a *tool receipt* — the 36-character id of a successful tool event owned by the same run, which the server looks up. The model can't cite a URL it never fetched.
+Research output — an earnings comparison, a timeline of events, a table of evidence — has a problem that layout doesn't: every row is a claim.
 
-Numeric cells can go further. A metric binding names the symbol, standalone or consolidated scope, period, metric, unit, and multiplier, and the server checks the value against structured filing data. The result says how many cells were bound and checked, and labels the rest `not_fact_checked`. We'd rather say outright that the prose isn't verified than suggest the whole table is.
+I'd make every row point at a source, and make "source" mean something checkable. A URL is only acceptable if this run actually retrieved it. A document must be one the user saved. Anything else should be a receipt: the id of a successful tool call that belongs to this run, which the server looks up before accepting the reference. The model can't cite a page it never opened, and a confident fake link fails validation instead of reaching the screen.
 
-That labelling has a story behind it. An evaluation run mixed standalone and consolidated figures in one comparison — both real numbers, from the same company, and not comparable. Scope is now a required field on a binding, and the rule is never to mix them.
+Numbers can go one step further. If a table cell claims "FY revenue, consolidated, in crore", let the spec *bind* that cell to a structured value — symbol, period, metric, unit, and scope — and have the server check it. Then report the result honestly: how many cells were bound and verified, and which were left as unverified text. Labelling prose as unchecked is much better than letting a polished table imply that everything in it was checked.
 
-<ArticleDiagram stem="13-model-agnostic-ai-artifacts-ui-contracts" alt="Fig. 1 — The agent proposes a spec through a tool. Validation either returns repairable errors or checks sources and saves a versioned snapshot, which our own component catalogue renders." />
+Scope deserves a special mention in finance. A company's standalone and consolidated figures are both real and not comparable. A comparison that quietly mixes them is wrong in a way no reviewer skimming the table will catch. Making scope a required field on a bound number is cheap and prevents a whole class of mistake.
 
-## The HTML escape hatch
+## The HTML escape hatch, fenced
 
-Some things don't fit a catalogue. So there's an `html-artifact` component, with tighter rules than anything else.
+Not everything fits a catalogue. Sooner or later someone wants a bespoke calculator or an unusual layout, and an "HTML panel" is the pragmatic answer. Treat it as a separate risk tier.
 
-The backend rejects iframes, `javascript:` URLs, `meta http-equiv`, and remote scripts, stylesheets, and images, and caps the document at 60,000 characters. The frontend then strips *every* authored `<script>` and `<style>` and wraps what's left in a host-owned kit with our own styles and a small set of behaviours. External links in citations are parsed, limited to 20 unique URLs per change, and each one is checked against the run's source ledger. The result runs in a sandboxed iframe without `allow-same-origin`.
+On the server, reject iframes, `javascript:` URLs, `meta http-equiv`, and remote scripts, styles, and images, and cap the size. On the client, strip *every* authored `<script>` and `<style>` and wrap what remains in a host-owned kit: your stylesheet, plus a small set of behaviours you wrote. Check outbound citation links against the run's list of retrieved sources. Render it in an iframe with `sandbox="allow-scripts"` and without `allow-same-origin`, so even the kit's own script runs in an opaque origin.
 
-That kit caused our most instructive bug. In an October evaluation, a generated scenario calculator had sliders that moved while the numbers stayed put. The model had put the calculation handler in a `<script>`, which the kit strips, as designed. The fix wasn't to allow scripts. We moved bounded arithmetic into the host kit itself, driven by numeric data attributes the model can write: base value, rate, percentage. Saved calculators were repaired on reload without a paid regeneration. The test case: 10,000 × 1.05 × 22% = 2,310.
+Here's the failure mode this creates. Imagine the agent builds a scenario calculator: an input, a slider, and a result that should update as you drag. The model writes the calculation as a handler inside a `<script>` tag. The sanitiser strips it, as designed. The slider moves and the number never changes. Nothing errors. It just looks broken.
 
-## Error messages are part of the contract
+The tempting fix is to allow scripts. The better one is to move a small, bounded set of behaviours into the kit, driven by data attributes the model *can* write — a base value, a rate, a percentage — so `10,000 × 1.05 × 22%` gets computed by code you own. The model describes the calculation. Your code performs it.
 
-Two more fixes from October were really about what we tell the model.
+## "Done" has to mean the same thing everywhere
 
-A projection canvas failed three times in a row on a source the agent couldn't identify, because every error repeated the full list of source rules. Now the error names the failing field and lists the receipt ids the run can actually use.
+One last, slightly embarrassing class of bug. An agent publishes an artifact, considers its job finished, and stops — while the user's screen still shows an empty desk, because publishing and placing are separate steps and the model only did one. The run says "published". The user sees nothing.
 
-And after publishing an HTML artifact, the agent usually stopped — so the desk stayed empty while the run counted the canvas as published. Publishing now places the canvas on the desk by default. The model's idea of "done" and the user's idea of "done" have to be the same state in the code, not two states we hope line up.
+The fix is to make the state the model thinks it has reached the same state the user sees. If publishing should put the artifact on screen, publishing should do that. Don't rely on the model remembering a second tool call.
 
-## What "model-agnostic" means here
+## Why this is model-agnostic
 
-None of this depends on which model is driving. A smaller model makes more invalid specs and gets more `applied: false` results back. A larger one gets it right first time more often. Both end up rendering through the same components, with the same source checks, the same snapshots, and the same sanitiser. The contract is what we test. The model is just whoever is writing to it this week.
+None of this depends on which model is driving. A smaller model produces more invalid specs and gets more repairable errors back. A stronger one gets it right the first time more often. Both render through the same components, with the same source checks, the same snapshots, and the same sanitiser. That's the point. The contract is the thing you test and review. The model is just whoever happens to be writing to it this week. (The same idea applies to the agent loop itself — see [the post on model-agnostic harnesses](/blog/model-agnostic-agent-harness-domain-contracts/).)

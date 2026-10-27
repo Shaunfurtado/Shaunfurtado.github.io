@@ -1,6 +1,6 @@
 ---
-title: Our Agent Can't Place Orders — and Other Human-in-the-Loop Decisions
-description: Where Ananta puts people in the loop, and where it keeps the agent out entirely — server-side approval cards, compare-and-swap answers, version-bound extension approval, connector write-backs with idempotency keys, and the month approval was just a chat message.
+title: 'Human-in-the-Loop for Agents: Keep the Model Out of the Approval Path'
+description: An approval that travels back through the model is a suggestion, not an authorisation. How I'd design agent approvals — server-side resolution, compare-and-swap answers, no default on silence, version-bound approvals, and write-backs with idempotency keys.
 pubDate: '2026-10-27'
 tags:
 - ai-agents
@@ -11,80 +11,84 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/human-in-the-loop-ai-approval-authorization/
-seoTitle: 'Human-in-the-Loop AI: Approvals That Live on the Server'
+seoTitle: 'Human-in-the-Loop AI: Server-Side Approvals for Agents'
 series: Systems in Practice
 articleId: 12
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
-Ananta connects to people's broker accounts. The obvious feature request is "let the agent place the trade after I approve it". We haven't built it, and that decision shapes everything else in this post.
+Give an agent access to someone's brokerage account and the first feature request will be "let it place the trade after I approve". It's a reasonable request. I'd still start by not building it.
 
-No agent tool places, modifies, or cancels an order. Broker tools are reads, plus watchlist edits. The REST endpoints for order mutations aren't in the public API schema, and they refuse unless an operator has explicitly turned on order mutations for the deployment *and* the caller is an admin. Children are told in their prompt never to touch the broker. For actions that move money, the human-in-the-loop design is: the human does it.
+For actions that move money, the simplest human-in-the-loop design is that the human does the action. The agent can research, draft, compute position sizes, and lay out the order it would place. The order form is filled in by a person, in the broker's own interface or in yours, with no agent tool anywhere near it. If order endpoints exist in your API at all, keep them out of the agent's reach entirely: out of the tool catalogue, behind an operator-level switch that's off by default, and restricted to admins.
 
-Everything below is about the actions we *do* let the agent take, and the four approval mechanisms that guard them.
+That sounds like dodging the problem, but it clarifies it. Once the irreversible, high-stakes actions are off the table, what's left are actions where approval can be designed properly: deploying an alert, enabling a calculator, writing a note back to a CRM. Here's how I'd design those.
 
-## The month approval was a chat message
+## Don't let the click travel through the model
 
-I'll start with the mistake, because it's the most useful part.
+The most tempting implementation is also the weakest. The agent shows a card with "Deploy" and "Keep as draft". Clicking Deploy sends a message back into the conversation — something like "Approved. Deploy this workflow with confirm=true." — and the model reads it and calls the deploy tool.
 
-From late September to late October, approving an alert workflow deployment went like this. The agent showed a card with "Deploy" and "Keep as draft". Clicking Deploy sent a hidden chat message back to the agent — something like "HITL: Deploy this workflow. I confirm confirm=true. Do not list approval options again." — and the *model* then called the deploy tool with `confirm=true`.
+It works in demos. But look at where authority sits: the last step between a person's click and the action is a language model interpreting a sentence. The approval isn't tied to any particular version of the thing being approved. A model can misread it. And nothing structurally stops a model from producing `confirm=true` without the click ever happening.
 
-It mostly worked. It was also an approval system whose final step was a language model reading a sentence and deciding what it meant. The approval wasn't tied to a specific workflow version, a model could misread it, and nothing stopped a model from producing `confirm=true` without the click.
+The fix is to resolve approvals on the server. The card's buttons call an authenticated endpoint, and that endpoint performs the action. The click *is* the confirmation. The model is told what happened afterwards, as a fact in its context, not as an instruction to act on.
 
-In October we moved it to the server. The card's buttons now call an authenticated endpoint that performs the action itself — the click *is* the confirmation. The deploy tools still refuse without `confirm=true` and return `confirmation_required` with a card, but the card no longer routes through the model. A shared analysis link never authorises a deployment, even for someone who can see it. After deploying, the endpoint reads the workflow back and returns 409 unless it's actually active. The outcome is recorded in the run's metadata and as an event.
+A few rules make that robust:
 
-A day later a real-browser test turned up a race. The user approved a draft mid-run, and the agent's next edit overtook it: "Kept as draft", then a new review card. Cards from a run that's still going are now shown as *waiting* and only become actionable when the run finishes. Card states: pending, resolved, superseded by a newer review of the same workflow, expired, and waiting.
+- The tool that requests the action still refuses without explicit confirmation, and returns a structured "confirmation required" result that the UI renders as a card.
+- A shared or read-only view never authorises anything, even if the viewer can see the card.
+- After acting, read the result back. If a deploy endpoint can't confirm the thing is actually active, return a conflict instead of a cheerful success.
 
-## Questions: the first answer wins, silence decides nothing
+There's also a race to plan for. If the user approves something while the run is still going, the agent's next edit can overtake the approval: "kept as draft", then a new review card for a slightly different version. Mark cards from a still-running run as waiting, and make them actionable only when the run has finished. Useful card states: pending, resolved, superseded by a newer review of the same thing, expired, and waiting.
 
-When the agent needs input mid-run, it calls `ask_user`. The wait is capped at 30 seconds. The question id is derived from the run, its epoch, and the tool call id, so a retried tool call asks the same question rather than a new one. Answering is a compare-and-swap:
+## Questions: one answer wins, and silence decides nothing
+
+Sometimes the agent needs a decision mid-run. Give it a way to ask, with a short timeout. Derive the question's id from the run, its attempt, and the tool call, so a retried tool call asks the same question rather than a duplicate. Then make answering a compare-and-swap:
 
 ```sql
-UPDATE chat_questions
+UPDATE questions
    SET status = 'answered', answer = :answer
- WHERE id = :id AND status = 'pending'
-   AND expires_at > now() AND run_epoch = :epoch;
--- rowcount != 1 → "Another answer already resolved this question"
+ WHERE id = :id
+   AND status = 'pending'
+   AND expires_at > now()
+   AND run_attempt = :attempt;
+-- 0 rows → someone else answered, it expired, or the run moved on
 ```
 
-The comment on that query notes that the compare-and-swap protects SQLite too, where `SELECT … FOR UPDATE` does nothing. Two tabs, two clicks, one answer.
+That handles two tabs, two clicks, and a stale page in one statement, and it works the same on SQLite, where `SELECT … FOR UPDATE` doesn't help you.
 
-There's no default answer. If nobody answers, the agent is told that silence doesn't select a deliverable or authorise any action. In our October evaluation one scenario let a question expire on purpose. The older code had treated expiry as permission to pick a default. Now the late answer gets a 409.
+The other rule is that there's no default answer. If nobody responds, the agent should be told that silence doesn't select an option or authorise anything. It's tempting to let a timeout pick the "safe" choice. But a default that fires on expiry is an approval nobody gave, and a late answer arriving after the default has been applied is a conflict you then have to explain to the user.
 
-## Extensions: approve exactly what was tested
+## Approve exactly the thing that was tested
 
-The agent can propose a new calculator extension — source code plus test fixtures — and the sandbox evaluates it. Passing the evaluation doesn't enable it. The owner gets an approval card, and that approval is bound to the exact extension id, version, and evaluation report id, and only if the evaluation passed. If anything changed between evaluation and approval, enabling returns 409: "Extension changed; review a fresh proposal before enabling."
+Some approvals are about artefacts the agent created. Say the agent can propose a small calculator: some code plus test cases, evaluated in a sandbox. Passing the tests shouldn't enable it. A person should, and that approval should be bound to the exact proposal id, version, and evaluation report — and only if the evaluation passed. If anything changed between evaluation and approval, enabling fails with a clear message: review the new proposal.
 
-Planning mode, child runs, and test automation can't enable a proposal. Test automation, for what it's worth, is gated to designated test users, can only auto-approve alert deployments, and records each one as `test_automation_approval` — explicitly labelled as not human authorisation.
+Automation needs its own boundary. Planning-only modes and child agents shouldn't be able to approve anything. If test suites need to auto-approve, restrict that to designated test accounts and specific action types, and record each one as automation, explicitly not as human authorisation.
 
-## Connector write-backs: prepare, ask, re-check, send
+## Write-backs: prepare, ask, re-check, send
 
-Some client deployments have connectors that can write to the client's own systems — update a record, post a note. This is the most complete approval flow we have:
+The most complete flow is for an agent writing to someone else's system — updating a record, posting a note. I'd break it into steps, each with a state you can see:
 
-1. **Prepare.** Validate the payload against the action's JSON schema, canonicalise it, derive an idempotency key from the run, user, and canonical payload, and insert a row in `pending_confirmation`. If the key already exists, return the stored result marked `reused`.
-2. **Ask.** "Send to X: … ?" with *Send* and *Don't send*, and no recommended option.
-3. **Confirm.** Compare-and-swap from `pending_confirmation` to `confirmed`.
-4. **Re-check.** Permissions and information barriers are evaluated again, fresh.
-5. **Claim.** Compare-and-swap from `confirmed` to `sending`.
-6. **Act.** Call the connector with the idempotency key.
-7. **Record.** `sent` or `failed`, plus an audit receipt.
+1. **Prepare.** Validate the payload against the action's schema, canonicalise it, and derive an idempotency key from the run, the user, and the canonical payload. Store a row as awaiting confirmation. If the key already exists, return the stored result.
+2. **Ask.** "Send this to X?" showing the payload, with *Send* and *Don't send* and no recommended option.
+3. **Confirm.** Compare-and-swap from awaiting confirmation to confirmed.
+4. **Re-check.** Evaluate permissions and information barriers again, fresh. Access can change in the minutes between asking and answering.
+5. **Claim.** Compare-and-swap from confirmed to sending.
+6. **Act.** Call the external system with the idempotency key.
+7. **Record.** Sent or failed, plus an audit receipt.
 
-It refuses outside an interactive chat — "confirmation unavailable; nothing was sent" — so scheduled runs and children can only read. Automated test answers don't count, because the confirmation must come from a user.
+<ArticleDiagram stem="12-human-in-the-loop-ai-approval-authorization" alt="Fig. 1 — A write is prepared and stored before anyone is asked. The answer is a compare-and-swap, permissions are re-checked after approval, and the external call carries an idempotency key." />
 
-<ArticleDiagram stem="12-human-in-the-loop-ai-approval-authorization" alt="Fig. 1 — A connector write is prepared and stored before anyone is asked. The answer is a compare-and-swap, permissions are re-checked after approval, and the external call carries an idempotency key." />
+Refuse this flow outside an interactive session. A scheduled run or a child agent has nobody to ask, so it can read but never write. And a row stuck in "sending" after a crash is an unknown outcome. Show it as unknown and let a person reconcile it, rather than retrying automatically.
 
-## The browser: approval hands over control
+## Handing control to a person
 
-In the browser plane, actions are classed from R0 (observe) to R4 (prohibited). Version one denies everything consequential — R3 and R4 — in code. If someone clicks approve on one anyway, the request is recorded as denied with `forced: true` in the audit log.
-
-Approving a takeover or a login request doesn't let the agent carry on. It hands control to the *person*: the identity's control epoch is bumped, the browser broker fences the session at the new epoch, the agent's lease is cleared, and any agent command still in flight fails because its epoch is stale. ([The browser post](/blog/browser-agents-identity-infrastructure/) covers that fencing in detail.)
+Browser agents need a different kind of approval. When the agent hits a login page or an action it isn't allowed to take, the right move is often to hand the browser to the person, not to ask permission to continue. Approving that handover should give control to the human: bump a control epoch, revoke the agent's lease, and make any agent command still in flight fail because its epoch is stale. ([The browser agents post](/blog/browser-agents-identity-infrastructure/) goes into that fencing.) Consequential browser actions — submitting forms that commit to something — I'd deny in code for now, and record a forced denial if someone approves one anyway.
 
 ## Who's allowed to approve
 
-All of this sits on role-based access with four built-in roles — admin, operator, viewer, and pending/disabled — plus custom roles, and per-member monthly spend limits with a notice at 80% and a stop at 100%. Information barriers add desks with symmetric walls and restricted securities. Admins get no read bypass. A member restricted from a security doesn't get streamed tokens at all, because a ticker can be split across stream fragments; their answer is screened whole before it's stored.
+All of this sits on ordinary access control: roles, per-member spend limits with a warning before the hard stop, and, in finance, information barriers. Desks are walled off from each other, and some securities are restricted for some people. Admins shouldn't get a read bypass. If a member is restricted from a security, consider not streaming tokens to them at all, since a ticker can be split across stream fragments. Screen the whole answer before it's stored and shown.
 
-## What's still not right
+And check that membership is *active*, not just that the user exists. A sign-up flow that creates pending members is easy to get wrong: if most routes only check for a user, a pending account can do far more than intended.
 
-The four mechanisms grew separately, and they aren't equally strict yet. Extension approval is bound to an exact version and evaluation report. Deploy approval is newer and simpler, and bringing it up to the same standard is next. The connector confirmation shows each field cut to 60 characters, which is readable but easy to skim past. And `ask_user` keeps the worker polling for its 30 seconds — bounded, but not free.
+## The rule I'd start from
 
-The pattern I'd recommend is the one we arrived at late: the approval is a row on the server, the click resolves that row, and the model is told what happened afterwards. If the model is in the path between the human's click and the action, you don't have approval. You have a suggestion.
+Approvals are rows on the server. A click resolves a row. The model hears about it afterwards. If the model sits between a person's click and the action, you don't have an approval system. You have a suggestion box with very good manners.

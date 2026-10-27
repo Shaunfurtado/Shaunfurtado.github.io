@@ -1,20 +1,20 @@
 digraph browser {
 rankdir=TB;
 user [label="user"];
-api [label="backend\nRBAC · epoch CAS\nviewer tokens", class="key"];
-broker [label="browser broker\nallowlist · DNS check\njournal · capacity"];
+api [label="API\npermissions · version CAS\nviewer tokens", class="key"];
+launcher [label="session launcher\nallowlist · DNS check\njournal · capacity"];
 subgraph cluster_plane {
-  label="browser-plane (internal)";
-  session [label="session container\nChromium · Playwright\nKasmVNC"];
-  squid [label="squid egress\nno private ranges"];
+  label="internal network";
+  session [label="browser container\nChromium · Playwright\nVNC"];
+  proxy [label="egress proxy\nno private ranges"];
 }
 profile [label="profile volume\none writer"];
 net [label="internet", class="ghost"];
 user -> api;
-api -> broker [label="grant @ epoch"];
-broker -> session [label="launch"];
+api -> launcher [label="grant @ version"];
+launcher -> session [label="start"];
 session -> profile;
-session -> squid;
-squid -> net;
-api -> session [label="WSS proxy (takeover)", style=dashed];
+session -> proxy;
+proxy -> net;
+api -> session [label="viewer proxy", style=dashed];
 }

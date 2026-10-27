@@ -1,6 +1,6 @@
 ---
-title: How Sorting Our Tool List Broke Prompt Caching
-description: A paid evaluation where "optimised" tool loading halved our cache coverage, the one-line cause, how we measure prefix stability per call, and why we won't publish a single savings number.
+title: Prompt Caching for Agents — The Prefix Is an API You Have to Keep Stable
+description: Why an innocent-looking sort can halve your cache hits, where dynamic context should go instead, how to measure prefix stability per call, and why "missing" usage data must never count as zero.
 pubDate: '2026-10-27'
 tags:
 - ai-agents
@@ -11,88 +11,87 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/prompt-caching-ai-agents-prefix-cache-hit-rate/
-seoTitle: 'Prompt Caching for AI Agents: A Real Cache Regression and Its Fix'
+seoTitle: 'Prompt Caching for AI Agents: Stable Prefixes and Honest Measurement'
 series: Systems in Practice
 articleId: 8
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
-An agent turn in Ananta can involve a dozen model calls, and every one of them resends the system prompt and the tool definitions. With the full tool catalogue attached, that's tens of kilobytes per call before the user's question even appears. Provider-side prompt caching is what makes that affordable, and for a while we were accidentally defeating it with code that looked like good hygiene.
+A single agent turn can involve a dozen model calls, and every one of them resends the system prompt and the tool definitions. With a large tool catalogue, that's tens of kilobytes per call before the user's question even appears. Provider-side prompt caching — reusing the computed prefix of a request that matches a recent one — is what makes that affordable.
 
-## The evaluation
+The thing that took me a while to absorb is that the cache doesn't care about your intent. It cares about bytes. The prefix of your request is effectively an API between you and the provider, and very ordinary code can break it without anyone noticing.
 
-In early October we ran a paid evaluation on the hosted build: 15 real sessions, 45 parent runs, 562 provider calls, all through one OpenRouter-routed model. About 19.85 million input tokens in total, of which 62.8% were served from cache. The settled cost was $0.84, plus about $0.22 in reservations that never resolved — because 9 calls never reported usage at all.
+## A bug that's easy to write
 
-That 62.8% hides the story. Here's cache coverage by phase:
-
-| Phase | Cache coverage |
-|---|---:|
-| First runs, full tool catalogue | 21.0% |
-| "Optimised" selective tool loading | 10.9% |
-| Stable tool order + prefix affinity | 78.8% |
-| Final image | 85.3% |
-
-The optimisation made things worse — it halved cache coverage.
-
-## The cause
-
-Selective loading means the agent starts with a smaller set of tools and loads more as it needs them (I wrote about how that works in [the skills and tool visibility post](/blog/skills-adaptive-tool-visibility-agent-authorization/)). Loaded tools are appended to the list. That should be cache-friendly: the prefix up to the old last tool stays the same.
-
-But our provider audit transport — the layer that logs and forwards requests — was doing this on every request:
+Here's one. Somewhere between your agent and the provider sits a layer that logs requests — for debugging, cost tracking, audit. Someone wants the logs to be deterministic and easy to diff, so they normalise the tool list:
 
 ```python
-# before
-body["tools"] = sorted(body["tools"], key=lambda t: (t["type"], t["function"]["name"]))
+body["tools"] = sorted(body["tools"], key=lambda t: t["function"]["name"])
 ```
 
-It was there so request logs would be deterministic and easy to diff. With a fixed tool list, it was harmless. With tools loaded on demand, a newly loaded tool whose name sorted near the front shifted every tool after it. The cached prefix ended right at the first tool — every time the agent loaded something.
+With a fixed set of tools, this is harmless. Every request has the same sorted list.
 
-The fix removed the sort and left a comment where it used to be: the capability catalogue already produces a deterministic, append-only order, and re-sorting would invalidate an accepted prefix after a tool load.
+Now add on-demand tool loading. The agent starts with a core set and loads more as the task needs them. You did the cache-friendly thing and *appended* new tools to the end, so the prefix up to the old last tool stays identical. Except the logging layer re-sorts. A newly loaded tool whose name starts with "a" jumps to the front, shifts every tool after it, and the cached prefix now ends right after the system prompt. It happens on every call after every load.
 
-We also started sending a prompt cache key — a hash of the model plus the system messages — as a routing hint, so requests with the same prefix are more likely to land on a provider instance that already has it cached. The code says plainly that it's a hint, not a guarantee, and that observed usage is what counts.
+The symptom is subtle. Nothing errors. Costs go up and latency gets a bit worse. If you also shrank the initial tool list to save tokens, your dashboard can show the optimisation making things *worse* — cache coverage dropping by half or more — and it's tempting to conclude that dynamic tool loading just doesn't pay.
 
-## Keeping the prefix stable on purpose
+The fix is to delete the sort, and leave a comment where it was explaining why. Ordering should be decided in one place — whatever assembles the tool list — and that place should guarantee a deterministic, append-only order. Every layer after it should treat the list as opaque.
 
-Fixing one bug doesn't stop the next one. A few rules now hold the prefix together.
+## Where dynamic context goes
 
-**Everything dynamic goes at the end.** The current date, context hooks, loaded skill bodies, and the status bar are appended as trailing messages, never written into the system prompt. A clock in the system prompt is the classic cache breaker — the prefix changes every minute.
+The general rule: anything that changes between calls goes *after* anything that doesn't.
 
-**A lint for the obvious mistakes.** Before every call, the harness checks the system instructions for markers that should never be there — `Today is`, a dumped workspace spec, a selected canvas component id, connected MCP context — and records a cache breaker if it finds one.
+- **System prompt:** frozen. No timestamps, no user names, no "current state".
+- **Tool definitions:** stable order, appended to and never reshuffled.
+- **Conversation history:** grows at the end. Rewriting old turns breaks the prefix from that point.
+- **Dynamic context** — the current time, a snapshot of the user's data, loaded procedures, a status line: appended as trailing messages, last.
 
-**Compaction is the one planned break.** When a conversation is summarised, the history prefix changes. So the summary is stored and reused until the conversation crosses the threshold again, rather than regenerated on every turn.
+The classic cache breaker is a clock in the system prompt. "Today is Tuesday, 14:32" changes every minute, and with it the first few hundred bytes of every request. Put the time in a trailing message instead. Same information, and the prefix survives.
 
-## Measuring it per call
+A cheap safeguard is a lint that runs before every call: scan the system prompt for markers that should never be there — "Today is", a serialised workspace state, an id of the currently selected item — and record a warning if one shows up. It catches the regression where someone helpfully adds context to the wrong place.
 
-For every model call we record the byte size and SHA-256 of each component: system messages, tools (both sorted and in their actual order — comparing the two would have caught our bug immediately), history, each message, and parameters. We also hash the raw request bytes at 256, 4,096, 16,384, and 65,536 bytes, which tells us roughly how far into the request two calls agree.
+## One deliberate break
 
-A per-run tracker compares each call with the previous one:
+Compacting a long conversation — replacing older turns with a summary — changes the history prefix by design. That's fine, as long as it happens rarely. Store the summary and reuse it across calls until the conversation grows past the threshold again. Regenerating it on every call would make it a moving prefix, and you'd lose the cache on exactly the long conversations where it helps most. [The compaction post](/blog/agent-context-compaction-checkpoints/) covers the rest.
+
+<ArticleDiagram stem="08-prompt-caching-ai-agents-prefix-cache-hit-rate" alt="Fig. 1 — The frozen system prompt and append-only tool list form the cacheable prefix. History grows at the end and dynamic context is appended last. A wire layer hashes each component, and usage is recorded as cached, uncached, or unreported." />
+
+## Measure what you offered the provider
+
+You can't fix cache regressions you can't see, and provider dashboards usually show a single aggregate. I'd add two kinds of per-call telemetry.
+
+**Component hashes.** For every request, record the byte size and a hash of each part: system messages, tools, history, each individual message, and parameters. For tools, record two hashes: one of the list in its actual order and one sorted. If the sorted hash matches the previous call but the ordered one doesn't, something reordered your tools. That pair would have caught the bug above on the first call. Hashing the raw request bytes at a few fixed lengths (say 256 bytes, 4 KB, 16 KB, 64 KB) also tells you roughly how far into the request two calls agree.
+
+**A per-run comparison.** Compare each call with the previous one in the same run:
 
 ```python
 {
-  "instructions_changed": False,
-  "tools_changed": False,           # order-sensitive
-  "matching_leading_messages": 14,
-  "history_prefix_rewritten": False,
-  "history_shortened": False,
+    "system_changed": False,
+    "tools_changed": False,           # order-sensitive
+    "matching_leading_messages": 14,
+    "history_rewritten": False,
+    "history_shortened": False,
 }
 ```
 
-It's labelled as local message hashes, not tokeniser or provider cache accounting. It tells you whether you *offered* the provider a stable prefix. Whether the provider *used* it is a separate number, read from usage.
+Be clear about what this is. It tells you whether you *offered* the provider a stable prefix. Whether the provider *used* it is a separate fact, read from the usage data it returns. Routing matters too: with some providers, sending a stable cache key or session hint makes it more likely that requests with the same prefix land where the cache already is. Treat that as a hint, never a guarantee, and judge it by observed usage.
 
-<ArticleDiagram stem="08-prompt-caching-ai-agents-prefix-cache-hit-rate" alt="Fig. 1 — The frozen system prompt and append-only tool list form the cacheable prefix. Dynamic context is appended last. The wire layer hashes each component, and provider usage is recorded as cached, uncached, or not reported." />
+## Missing data isn't zero
 
-## Missing isn't zero
+Providers report cached tokens under different names — `cached_tokens` inside prompt token details on OpenAI-style APIs, separate cache read and write fields on Anthropic's — and sometimes not at all: a stream that ended early, a proxy that dropped the usage block. Normalise the field names into one record, and keep a separate flag for *whether cache data was reported*.
 
-Providers report cached tokens under different field names, and sometimes not at all. Our usage records normalise the variants and keep a separate flag saying whether cached tokens were reported. A call with no cache data is *unreported*, not a 0% hit and not a 100% hit. Nine calls in that evaluation fell into that bucket, and folding them in either way would have moved the headline number.
+A call with no cache data is unreported. It isn't a 0% hit and it isn't a 100% hit. If you fold those calls in either way, your headline number moves for reasons that have nothing to do with caching.
 
-## Why I won't quote one savings figure
+## Be careful with savings numbers
 
-You could price the same observed tokens as if nothing had been cached and compare. For that evaluation it comes to about $2.06 without caching against $0.84 actual — roughly 59% less. Our write-up includes that number with a warning attached: it's specific to that model and that price list, and it isn't proof that our code changes alone reduced spending.
+The tempting report is a single line: "caching saved X%". You can compute something like it — price the same observed tokens as if none had been cached, and compare with what you actually paid. That's a reasonable *discount* figure for one model and one price list. It isn't evidence that a particular code change reduced spending, because the workload changed too.
 
-Per-session cache coverage ranged from 0.3% to 93.6%. A short one-question session never warms the cache. A long research session with a stable prefix lives in it. Any single average describes neither.
+Per-session numbers also vary enormously. A one-question session never warms the cache. A long research session with a stable prefix lives in it. You can easily see sessions near 0% and near 95% in the same week, and an average describes neither. I'd report the distribution, and the share of calls with unreported usage, before any single percentage.
 
-## What we didn't ship
+## When fewer tokens costs more
 
-Selective tool loading did cut the median serialised tool payload by about a third in bytes (not the same thing as tokens). It's still not the production default. A paired benchmark on frozen inputs showed the deferred strategy needing extra calls to discover and load tools, so total input went *up* slightly while latency rose. Our promotion gate asks for at least 25% less input with no more than 10% extra latency, and it wasn't met.
+Finally, a trade-off worth testing rather than assuming. Loading tools on demand does shrink each request. But the agent then spends calls discovering and loading tools, and each extra call resends the whole prefix. In a fair comparison on frozen inputs, deferred loading can come out *more* expensive in total input than attaching the full tool set for the task, even with smaller requests.
 
-So production attaches the full tool list for the selected route, in a stable order, and the cache does the rest. It's less clever than what I'd planned. It's also cheaper — and we can show why.
+My default now: attach the full, stable tool set for the kind of task at hand, keep on-demand loading as an escape hatch, and let the cache do its job. It's less clever than the alternative. Whether it's cheaper is something you can measure, as long as you measure the whole task and not bytes per request.
+
+Both [OpenAI's](https://platform.openai.com/docs/guides/prompt-caching) and [Anthropic's](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) caching docs are worth reading for the provider-specific rules on minimum prefix length and cache lifetime.

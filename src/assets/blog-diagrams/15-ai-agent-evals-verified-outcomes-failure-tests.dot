@@ -1,13 +1,13 @@
 digraph evals {
 rankdir=TB;
-turn [label="user turn"];
-plan [label="deterministic planner\nrequired evidence kinds"];
+turn [label="user request"];
+plan [label="deterministic planner\nrequired evidence"];
 loop [label="agent loop"];
 audit [label="audit events"];
 check [label="evidence checker", class="key"];
 done [label="done\nor typed blocker"];
-nudge [label="harness nudge\n≤ 3"];
-partial [label="partial\nvisible strip", class="ghost"];
+nudge [label="bounded nudge"];
+partial [label="partial\nvisible note", class="ghost"];
 turn -> plan -> loop -> audit -> check;
 check -> done [label="satisfied"];
 check -> nudge [label="gaps"];

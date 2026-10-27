@@ -1,18 +1,18 @@
 digraph compaction {
 rankdir=TB;
 turn [label="new turn"];
-check [label="over 80% of\nbudget − reserve?", shape=diamond, style=""];
-reuse [label="frozen summary\n+ recent raw turns"];
-summ [label="cheap summariser\npolicy-approved model", class="key"];
-fall [label="fallback\nfrozen summary / drop oldest", class="ghost"];
+check [label="over threshold?", shape=diamond, style=""];
+reuse [label="stored summary\n+ recent raw turns"];
+summ [label="summariser\npolicy-approved model", class="key"];
+fall [label="fallback\nold summary / drop oldest", class="ghost"];
 input [label="model input"];
-index [label="audit log + FTS index\nnever compacted"];
+log [label="event log + search index\nnever compacted"];
 turn -> check;
 check -> reuse [label="no"];
 check -> summ [label="yes"];
-summ -> reuse [label="new summary"];
+summ -> reuse [label="merged summary"];
 summ -> fall [label="fails", style=dashed];
 reuse -> input;
 fall -> input;
-input -> index [label="session_search / expand", style=dashed];
+input -> log [label="search / expand", style=dashed];
 }

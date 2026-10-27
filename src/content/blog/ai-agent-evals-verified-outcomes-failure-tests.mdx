@@ -1,6 +1,6 @@
 ---
-title: What a $0.84 Paid Evaluation Taught Us About Our Agent
-description: Evidence-based completion from audit events instead of the model's word, typed blockers, a repair budget that ignores rewritten prose, a paired benchmark on frozen inputs — and the real numbers, including the gates we failed.
+title: Grade the Agent on What It Did, Not What It Said
+description: A practical method for evaluating AI agents — completion decided from audit events instead of the model's own account, typed blockers as honest outcomes, repair budgets that ignore rewritten prose, and paired benchmarks on frozen inputs.
 pubDate: '2027-01-12'
 tags:
 - ai-agents
@@ -11,101 +11,105 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/ai-agent-evals-verified-outcomes-failure-tests/
-seoTitle: 'AI Agent Evals: Evidence, Paired Benchmarks, and Honest Results'
+seoTitle: 'AI Agent Evals: Evidence from Audit Events and Paired Benchmarks'
 series: Systems in Practice
 articleId: 15
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
-"The agent said it fetched the filing" and "the agent fetched the filing" are different claims. For the first few months of Ananta's agent, our idea of a finished run was mostly the first one. This post is about how we moved to the second, and about the evaluation that showed us where we still weren't.
+"The agent said it read the filing" and "the agent read the filing" are different claims. Most agent evaluations I've seen grade the first one. They look at the final answer, maybe ask another model whether it sounds right, and record a pass.
 
-## Done is decided by evidence, not the model
+The trouble is that a fluent answer is the one thing language models are reliably good at. An agent that skipped the fetch, guessed the number, and wrote a confident paragraph will often score better on prose than one that read the source, hit a paywall, and said so. If your evaluation can't tell those two apart, it's measuring writing, not work.
 
-When a user sends a message, a deterministic planner — not a model — reads the message and the desk state and works out what kinds of evidence a real answer needs:
+This is the method I'd use instead. None of it is exotic. Most of it is bookkeeping.
 
-```python
-EVIDENCE_KINDS = (
-    "link_fetch",     # the user pasted a URL
-    "web_grounding",  # a claim about the world
-    "broker_read",    # anything about their holdings or orders
-    "calculation",    # a number we have to compute
-    "canvas",         # they asked for something on the desk
-    "mcp_or_intel",   # market data or research sources
-)
-```
+## Decide what evidence the task needs, without a model
 
-When the agent says it's finished, a checker walks the run's *audit events* — what tools actually ran and what they returned — not the model's description of what it did. If someone pasted a link and there's no successful fetch of that link, the run isn't done. A calculation done in the model's head doesn't count as a calculation. An artifact request is done when the file exists *and* it's listed for the user.
+Before the agent starts, work out what a real answer requires. Do it with plain code, not a model, so the requirement can't be talked out of existing.
 
-Some outcomes are legitimately done without the evidence. These are typed blockers: `needs_human`, `action_required`, `source_unreadable`, `url_unreadable`, `policy_denied`, `capacity_exhausted`, `plane_unavailable`. A paywalled page that returns `url_unreadable` is an honest answer. A paragraph that sounds like the page was read is not.
-
-## Nudges have their own budget
-
-If evidence is missing, the harness nudges the agent to continue, up to three times. That budget is separate from provider retries, so a 503 from the model provider can't use up the attempt that was meant to say "please actually fetch the URL".
-
-There's also a repair budget that's harder to fool:
+A handful of evidence kinds covers a lot of ground:
 
 ```python
-class CompletionRepairBudget:
-    def __init__(self, max_unchanged_repairs: int = 1):
-        self.limit = max_unchanged_repairs
-        self.seen = Counter()
-
-    def allow(self, requirements) -> bool:
-        signature = sha256(sorted(pending(requirements)))
-        self.seen[signature] += 1
-        return self.seen[signature] <= self.limit
+class Need(Enum):
+    FETCH = "the user pasted a link; it must be fetched"
+    GROUNDING = "a claim about the world needs a retrieved source"
+    ACCOUNT_READ = "anything about the user's own data needs a read"
+    CALCULATION = "a computed number needs an executed calculation"
+    ARTIFACT = "a requested file must exist and be delivered"
 ```
 
-It hashes the *pending requirements*, not the answer text. An agent that rewrites its prose without verifying anything new hasn't made progress, and gets no second repair. One that verified another source has changed the signature and keeps going.
+The rules can be simple. A URL in the message means `FETCH`. A question about "my holdings" means `ACCOUNT_READ`. "Build me a chart" means `ARTIFACT`. You'll get some wrong, and that's fine. A deterministic planner that's occasionally too strict is much easier to reason about than a model that occasionally decides evidence isn't needed today.
 
-When the budget runs out, the run completes as `evidence_status=partial`, with a visible strip in the UI saying what couldn't be verified. Hiding that, or failing the whole run, would both be worse.
+## Check the audit log, not the transcript
 
-<ArticleDiagram stem="15-ai-agent-evals-verified-outcomes-failure-tests" alt="Fig. 1 — A deterministic planner sets the required evidence. The checker reads audit events, not the model's claims. Missing evidence gets up to three nudges; then the run completes as partial with a visible strip." />
+When the agent says it's finished, a checker walks the run's *audit events* — the tool calls that actually executed and what they actually returned. It doesn't read the model's description of what it did.
 
-## The paid evaluation
+If someone pasted a link and there's no successful fetch of that link, the task isn't done, however good the summary looks. A number worked out in the model's head doesn't satisfy `CALCULATION`. Only an executed calculation does. A file request is satisfied when the file exists *and* it was handed to the user. "I've attached the report" isn't evidence of either.
 
-In early October we ran the agent against the hosted build with real money: 15 sessions written as scenarios, 45 parent runs, 562 provider calls, about 19.85 million input tokens (62.8% from cache), and 372,000 output tokens. Provider-reported cost settled at $0.84, plus $0.22 in reservations that never resolved, against a $5 target and a $10 hard ceiling.
+## Some failures are the right answer
 
-Some numbers were good. Some weren't:
+Not every task can be completed, and an agent that admits it should pass. So define typed blockers that count as legitimate outcomes:
 
-| Measure | Result |
-|---|---|
-| Median parent run | 177 s |
-| p95 parent run | 828 s |
-| p95 queue delay (overall) | 1.5 s |
-| p95 queue delay (10 follow-ups in a burst) | 111 s |
-| 250-job burst on 16 slots | ~490 s to drain, gate was 120 s — **failed** |
-| Child runs | 3 completed, 3 partial, 2 timed out, 2 cancelled |
+```python
+BLOCKERS = {
+    "source_unreadable",   # paywall, login wall, access denied
+    "needs_human",         # a person has to act first
+    "policy_denied",       # the user isn't allowed to do this
+    "capacity_exhausted",  # the system is out of room right now
+    "dependency_down",     # a required service is unavailable
+}
+```
 
-The defects it found were more useful than any of the numbers:
+A paywalled page reported as `source_unreadable` is a correct result. A paragraph that reads as though the page was read is a failure, even if every sentence in it happens to be plausible. This is the single most useful distinction in the whole method, and it's the one most evaluations miss.
 
-- A comparison mixed **standalone and consolidated** figures for the same company. Both were real numbers, and they weren't comparable. Scope is now a required field when a number is bound to filing data.
-- The model **invented a plausible exchange PDF link**. It was withdrawn, and sources now have to be URLs the run actually retrieved.
-- A **draft-only request activated a skill override**. Proposals now stay inactive until a person turns them on.
-- A **child timed out immediately and borrowed a parent's worker**, which led us to a deadlock in our queues.
-- A workflow checklist offered a **configuration sample as proof** that the workflow had actually run.
-- **Planning-only mode** used 4 calls, called a tool it shouldn't have, and took 81 seconds. After making tool denial a hard per-turn policy rather than a prompt instruction: 1 call, 0 tools, 19 seconds.
+## Nudge, with a budget that can't be gamed
 
-After the fixes, all 16 artifact downloads kept identical hashes across a full runtime replacement — what a user made before a deploy is still byte-for-byte what they get after it.
+When evidence is missing, it's reasonable to give the agent a nudge — "the requested link was not fetched" — and let it continue. Two details stop that from turning into a loop.
 
-We also found a bug in the *evaluation's* accounting: the budget settled from the initial stream, but the provider's real cost sometimes arrived later. An audit matched 1,391 call identities. A cost that exceeds its reservation now latches a violation and blocks further admission. An eval harness that misreports spending isn't much of an eval harness.
+Keep the nudge budget separate from provider retries. Otherwise a 503 from the model API can use up the attempt that was meant to say "please actually fetch the URL".
 
-## What the evaluation didn't measure
+And key the repair budget on *pending requirements*, not on the answer text:
 
-It's worth being as clear about this as about the results. These were adaptive sessions with follow-ups, not repeated trials of the same task, so they don't give a reliability distribution. I didn't compute cost per verified completion. Quality scores in our eval records start as `null` and need human review: counting completed runs doesn't tell you whether the answers were good. In our second cycle the full backend suite of 1,709 tests passed, and the same review found a delegated report treating a future-dated daily summary as "today's close". Our notes say plainly that completion status is not a factual-quality pass.
+```python
+def allow_repair(pending: set[str], seen: Counter, limit: int = 1) -> bool:
+    signature = hashlib.sha256("|".join(sorted(pending)).encode()).hexdigest()
+    seen[signature] += 1
+    return seen[signature] <= limit
+```
+
+An agent that rewrites its prose without verifying anything new produces the same signature and gets no second chance. One that verified another source has changed the signature and keeps going. Progress is measured by what's been verified, not by how different the paragraph looks.
+
+When the budget runs out, finish the run as *partial*, with a visible note saying what couldn't be verified. Hiding the gap and failing the whole run are both worse than telling the user plainly.
+
+<ArticleDiagram stem="15-ai-agent-evals-verified-outcomes-failure-tests" alt="Fig. 1 — A deterministic planner sets the required evidence. The checker reads audit events, not the model's claims. Missing evidence gets a bounded number of nudges; after that the run completes as partial, with a visible note." />
+
+## Scenarios should hunt for specific failures
+
+Pass rates on generic prompts tell you little. Write scenarios aimed at the mistakes agents actually make in your domain. A few I'd expect to find in any financial-research agent:
+
+- **Mixed scopes.** A comparison that uses one company's standalone figures and another's consolidated figures — both real, not comparable.
+- **Invented links.** A plausible-looking exchange or regulator PDF URL that was never retrieved.
+- **Instructions overreached.** A "draft only" request where the agent activates or publishes something anyway.
+- **Proof that isn't proof.** A configuration sample offered as evidence that a scheduled job actually ran.
+- **Stale as fresh.** A future-dated or previous-day summary presented as today's close.
+- **Ignored mode.** A "plan only, don't run anything" turn that still calls tools.
+
+The last one is worth a specific note. If "don't use tools" is only an instruction in the prompt, some fraction of runs will ignore it. Enforce it in code by wrapping the tools so they refuse during that turn, and the scenario becomes a regression test instead of a hope.
+
+Also test the evaluator. If your harness tracks spend, check that it reconciles against what the provider eventually bills. Costs that arrive after the stream ends are easy to miss, and an eval that under-reports its own spending isn't one to trust.
 
 ## Paired benchmarks on frozen inputs
 
-For changes that are supposed to save money, we use a paired benchmark. The harness freezes a saved conversation and every successful source-tool output, keyed by tool name and canonical arguments, with a checksum. It replays two variants — for example, full tool attachment versus grouped, on-demand loading — against identical inputs. If a variant asks for a read that isn't in the frozen set, that's an explicit failure. There's no live fallback to quietly make the comparison unequal. Variants run in counterbalanced order, because whichever goes first warms the cache.
+For changes that are meant to save money or time — a different tool-loading strategy, a shorter prompt, a cheaper model for one step — compare variants on *identical* inputs.
 
-A variant is promoted only if, across several cases, it uses at least 25% less cumulative input, adds no more than 10% median latency, and scores at least 4/5 on human-reviewed factual support and presentation, with no capability lost. Reports never promote anything automatically.
+Freeze a conversation along with every source-tool output it used, keyed by tool name and canonical arguments, with a checksum. Replay both variants against that frozen world. If a variant asks for a read that isn't in the frozen set, record an explicit failure. Never fall through to a live call, because then the two variants aren't seeing the same world any more. Run them in counterbalanced order, since whichever runs first warms the provider's prompt cache.
 
-Our grouped tool-loading strategy cut schema bytes by 28% and *increased* total input, because it needed extra calls. It wasn't promoted. That's the harness working. It stopped us shipping an optimisation that only looked like one.
+Then decide the promotion rule *before* looking at results. For example: at least 25% less total input, no more than 10% extra median latency, and human-reviewed factual quality no worse than before, across several cases. Don't promote anything automatically.
 
-The same idea applies to methodology changes. When we test a revised skill, only the skill body differs between variants. Runs on hypothetical data are marked as not qualified on financial sources, so a nice-looking test result can't be mistaken for a research claim.
+The point of a gate like that is that it can say no. A strategy that cuts request size by a third can still increase total input if it adds round trips to discover things it used to have up front. A paired benchmark shows that in an afternoon, before you ship it. (There's a longer version of that story in [the prompt caching post](/blog/prompt-caching-ai-agents-prefix-cache-hit-rate/).)
 
-## The rule I'd keep
+## Report the limits with the results
 
-For our research delivery gate, there's one line I'd put above everything else: no event is fabricated to turn a true negative into a send. If a workflow couldn't verify its universe, or a source was stale or incomplete, the report is held back and the inbox says why — `universe_coverage_unverified`, `source_publication_stale_or_future`, `source_pagination_incomplete`. One submission and one correction per attempt, then it stops.
+An honest evaluation report says what it didn't measure. Adaptive sessions with follow-ups are realistic, but they don't give you a reliability distribution — for that you need the same task repeated many times. A completed run isn't a correct run: keep quality scores empty until a person has reviewed them, rather than filling them from completion counts. And a green test suite says nothing about whether the research was right.
 
-An agent that sometimes says "I couldn't verify this" is more useful than one that never does. The evaluation's job is to make sure that when it says it did verify something, it did.
+The one rule I'd put above all the others: never fabricate an event to turn a true negative into a delivery. If a report couldn't verify its coverage, or its sources were stale, hold it back and say why. An agent that sometimes says "I couldn't verify this" is far more useful than one that never does. The evaluation's job is to make sure that when it says it did verify something, it actually did.

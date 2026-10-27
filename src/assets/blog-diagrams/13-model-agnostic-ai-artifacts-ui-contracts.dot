@@ -1,13 +1,13 @@
 digraph artifacts {
 rankdir=TB;
 agent [label="agent\n(any model)"];
-tool [label="compose / patch /\npublish tool"];
-val [label="validation\nextra=forbid · allowlists", class="key"];
-src [label="source ledger\nretrieved URLs · receipts"];
+tool [label="apply-spec tool"];
+val [label="strict validation\nclosed schema · allowlists", class="key"];
+src [label="source check\nretrieved URLs · receipts"];
 snap [label="versioned snapshot"];
-ui [label="our components\nor sandboxed kit iframe"];
+ui [label="product components\nor fenced HTML iframe"];
 agent -> tool -> val;
-val -> agent [label="applied: false + errors", style=dashed];
+val -> agent [label="not applied + errors", style=dashed];
 val -> src [label="valid"];
 src -> snap -> ui;
 }

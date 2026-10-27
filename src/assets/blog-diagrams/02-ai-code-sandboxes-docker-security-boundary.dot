@@ -1,19 +1,19 @@
 digraph sandbox {
 rankdir=TB;
 agent [label="agent run"];
-api [label="backend\nmints 120s grant\nwrites tool files", class="key"];
+api [label="API\nshort-lived grant\nwrites tool files", class="key"];
 broker [label="sandbox broker\nverify · policy\nmemory admission"];
 subgraph cluster_guest {
-  label="guest · network none · cap_drop ALL";
-  vm [label="BoxLite microVM\nor gVisor container"];
-  ws [label="/workspace\ntools · runs · user/out"];
+  label="guest · no network · no caps";
+  vm [label="microVM or\ngVisor container"];
+  ws [label="workspace\ninputs · outputs"];
 }
-snap [label="snapshot tar\n(idle 90s)", class="ghost"];
+snap [label="idle snapshot", class="ghost"];
 out [label="downloads\npath + hash checked"];
-agent -> api [label="sandbox_run_python"];
-api -> broker [label="HMAC grant"];
-api -> ws [label="materialize", style=dashed];
-broker -> vm [label="exec, 30s"];
+agent -> api [label="run code"];
+api -> broker [label="signed grant"];
+api -> ws [label="write inputs", style=dashed];
+broker -> vm [label="exec + timeout"];
 vm -> ws;
 ws -> snap [style=dashed];
 ws -> out;

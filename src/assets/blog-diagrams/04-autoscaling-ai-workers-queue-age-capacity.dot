@@ -1,15 +1,15 @@
 digraph scaling {
 rankdir=TB;
-queues [label="RQ queues\nchat · workflow · child"];
-pool [label="pool parent\ndepth − ready − starting\ncgroup CPU / memory caps", class="key"];
-kids [label="RQ children\npreloaded, then registered"];
-ctl [label="host controller\nheartbeats < 15s\nMemAvailable − reserves"];
-lock [label="deploy flock", class="ghost"];
-brw [label="browser broker\n2 GiB / session"];
-sbx [label="sandbox broker\n512 MiB / guest"];
+queues [label="RQ queues\nparent · child · other"];
+pool [label="pool parent\ndepth − ready − starting\ncgroup CPU / memory", class="key"];
+kids [label="worker processes\npreload, then register"];
+ctl [label="host controller\nfresh heartbeats\navailable memory"];
+lock [label="deploy lock", class="ghost"];
+brw [label="browser service\nown admission"];
+sbx [label="sandbox service\nown admission"];
 queues -> pool [label="depth + readiness"];
-pool -> kids [label="spawn ≤5 / tick"];
-pool -> kids [label="SIGTERM once (drain)", style=dashed];
+pool -> kids [label="spawn"];
+pool -> kids [label="SIGTERM once", style=dashed];
 ctl -> pool [label="scale containers"];
 lock -> ctl [style=dashed];
 ctl -> brw [label="same host RAM", style=dashed, dir=none];

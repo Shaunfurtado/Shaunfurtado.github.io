@@ -1,6 +1,6 @@
 ---
 title: Giving an AI Agent a Browser Without Giving It Your Logins
-description: How we built a browser plane for an agent that reads logged-in sites — one container per session, an egress proxy, epoch-fenced control, human-only passwords, and a recovery rule that only replays reads.
+description: A browser plane for agents that read logged-in sites — one container per session, an egress proxy with a narrow job, control fenced by a version number, human-only passwords, and a recovery rule that replays only reads.
 pubDate: '2026-11-17'
 tags:
 - ai-agents
@@ -11,27 +11,29 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/browser-agents-identity-infrastructure/
-seoTitle: 'Browser Agent Architecture: Sessions, Egress, and Control Epochs'
+seoTitle: 'Browser Agent Architecture: Sessions, Egress, and Control Fencing'
 series: Systems in Practice
 articleId: 3
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
-A lot of financial information still lives behind a login, on a site with no API. Our users wanted the agent to read those pages for them: a research portal they subscribe to, a broker's reports page, an exchange announcement that only renders in a real browser.
+A lot of useful information still lives behind a login, on a site with no API: a research portal someone pays for, a broker's reports page, an announcement that only renders in a real browser. Letting an agent read those pages is an obvious feature.
 
-The browser itself is the easy part. Playwright works. The hard part is that a logged-in browser *is* the user's identity. Whatever the agent can do in that tab, it does as them. So the browser plane in Ananta ended up being mostly identity infrastructure, with some automation attached.
+Driving the browser is the easy part. Playwright works. The hard part is that a logged-in browser *is* the user's identity. Whatever the agent can do in that tab, it does as them. So I think of a browser for an agent as identity infrastructure first, with some automation attached.
 
 ## One container per session, one way out
 
-Every browser session is its own container: Chromium, Playwright, KasmVNC for viewing, and a small action server. It's unprivileged, with a read-only root filesystem, tmpfs scratch space, a 512-process limit, 2 GiB of memory and 2 CPUs. The image is pinned by digest, so "the browser" means one specific build and not whatever was pulled last.
+The isolation unit I'd choose is a container per browser session: Chromium, Playwright, a VNC server so a person can watch, and a small action server. Unprivileged, read-only root filesystem, tmpfs scratch space, a process limit, explicit memory and CPU limits. Pin the image by digest so "the browser" means one specific build, not whatever was pulled last.
 
-It mounts exactly one profile volume — named from a hash of the identity — or a throwaway tmpfs home for anonymous browsing, plus a 10 MB quarantine directory for downloads. It doesn't mount the backend's data, Redis, or the Docker socket.
+Mount exactly one profile volume per identity — or a throwaway tmpfs home for anonymous browsing — plus a small quarantine directory for downloads. Nothing else: no application data, no Redis, no Docker socket.
 
-The network is where I spent the most time. Session containers sit on an `internal: true` Docker network, so they physically cannot reach the internet except through a Squid proxy. Policy is split three ways:
+The network is where most of the security thinking goes. Put session containers on a Docker network marked `internal: true`, so they physically can't reach the internet except through an egress proxy. Then split the policy across three places:
 
-1. The browser broker checks each identity's domain allowlist and does a DNS pre-check (a 60-second cache, a 5-second timeout, and failures never cached).
-2. The runtime re-checks every redirect hop, because an allowed domain can redirect anywhere.
-3. Squid refuses anything that resolves to loopback, link-local (which covers cloud metadata endpoints), RFC 1918 ranges, CGNAT, IPv4-mapped IPv6, and any port other than 80 and 443.
+1. The service that launches sessions checks each identity's domain allowlist and resolves the hostname first, with a short cache and a timeout. Never cache a failed lookup.
+2. The runtime inside the session checks every redirect hop, because an allowed domain can redirect anywhere.
+3. The proxy refuses anything that resolves to loopback, link-local (which covers cloud metadata endpoints), private ranges, CGNAT, or IPv4-mapped IPv6, and any port other than 80 and 443.
+
+With [Squid](http://www.squid-cache.org/Doc/config/http_access/) that last layer can look like this:
 
 ```text
 acl blocked_dst dst 127.0.0.0/8 169.254.0.0/16 10.0.0.0/8 \
@@ -39,68 +41,67 @@ acl blocked_dst dst 127.0.0.0/8 169.254.0.0/16 10.0.0.0/8 \
 acl web_ports port 80 443
 http_access deny blocked_dst
 http_access deny !web_ports
-# Per-identity allowlists are enforced upstream by the broker.
-# Squid has no grant context, so after the deny rules it allows.
+# Per-identity allowlists are enforced upstream.
+# The proxy has no idea whose request this is, so after the denies it allows.
 http_access allow all
 ```
 
-That last line looks alarming out of context. It's deliberate. Squid doesn't know which user or identity a request belongs to, so it can only enforce what's true for *every* session: no private addresses, no odd ports. Anything identity-specific lives in the broker, which does know. We also never intercept TLS — there's no man-in-the-middle certificate anywhere in this stack — and Squid strips query strings from its logs.
+That last line looks alarming out of context. It's deliberate. The proxy doesn't know which user or identity a request belongs to, so it can only enforce what's true for *every* session. Anything identity-specific belongs in the component that does know. I'd also never intercept TLS here — no man-in-the-middle certificate anywhere — and I'd strip query strings from proxy logs, because URLs carry tokens more often than you'd like.
 
-<ArticleDiagram stem="03-browser-agents-identity-infrastructure" alt="Fig. 1 — The backend owns identity state and the control epoch. The broker launches one container per session, and every request leaves through the egress proxy. A person takes over through a backend-proxied viewer." />
+<ArticleDiagram stem="03-browser-agents-identity-infrastructure" alt="Fig. 1 — The API owns identity state and the control version. A launcher starts one container per session, every request leaves through the egress proxy, and a person can take over through a proxied viewer." />
 
-## Control is a number, not a UI state
+## Control is a number
 
-At any moment a browser identity is in one state: `NEEDS_LOGIN`, `READY`, `LEASED_AGENT_CONTROL`, `HUMAN_CONTROL`, `ACTION_REQUIRED`, `LOCKED`, `REVOKED`, and a few more. What makes this safe isn't the state names. It's that every transition goes through a compare-and-swap on a `control_epoch` column:
+At any moment an identity is in one state: needs login, ready, under agent control, under human control, action required, locked, revoked. The state names aren't what make it safe. What makes it safe is that every transition is a compare-and-swap on a version number:
 
 ```python
-result = session.execute(
-    update(BrowserIdentity)
-    .where(BrowserIdentity.id == identity_id,
-           BrowserIdentity.control_epoch == expected_epoch)
-    .values(control_epoch=expected_epoch + 1, state=new_state)
+result = db.execute(
+    update(Identity)
+    .where(Identity.id == identity_id, Identity.version == expected)
+    .values(version=expected + 1, state=new_state)
 )
 if result.rowcount != 1:
-    raise HTTPException(409, "browser control epoch is stale")
+    raise Conflict("browser control has changed")
 ```
 
-When someone clicks "Take over", the backend atomically cancels queued agent actions, bumps the epoch, revokes the agent's grants, and enables keyboard and mouse in the viewer. Handing control back bumps the epoch again. Any agent action still in flight carries the old epoch and fails at the database, regardless of what any screen happens to show. Two browser tabs, a slow network, a stale UI — none of that matters, because the number decides.
+When someone clicks "Take over", one transaction cancels queued agent actions, bumps the version, revokes the agent's grants, and enables keyboard and mouse in the viewer. Handing control back bumps it again. Any agent action still in flight carries the old version and fails at the database, whatever any screen happens to show. Two tabs, a slow network, a stale UI — none of it matters, because the number decides.
 
-Passwords and OTPs are always typed by a person. A login session *starts* in `HUMAN_CONTROL`. The agent never sees credentials, and there's no "remember my password for the agent" feature. That was a product decision as much as a security one: if a site logs you out, a human logs you back in.
+Passwords and one-time codes should always be typed by a person. A login session can *start* in human control. The agent never sees credentials, and I wouldn't build a "remember my password for the agent" feature at all. If a site logs you out, a human logs you back in.
 
-Viewer tokens are short-lived, single-use, and bound to the user, workspace, identity, session, permission, a nonce, and the epoch. The backend proxies the KasmVNC WebSocket itself, and each session gets its own VNC password.
+Viewer access should be short-lived and single-use, bound to the user, identity, session, permission, and the current control version. Proxy the VNC WebSocket through the API rather than exposing it, and give each session its own VNC password.
 
 ## Saved logins are a durability problem
 
-Once users could save a logged-in profile, losing it became the worst bug we could ship. Persistent profiles have exactly one writer. Login checkpoints are atomic and include IndexedDB, because some sites keep the session there and not in cookies. Disposable copies mount the source read-only and can't publish a checkpoint back.
+Once users can save a logged-in profile, losing it becomes the worst bug you can ship — worse than a crash, because nothing looks broken.
 
-The broker keeps an encrypted journal of what it launched — session, container, image, generation, epoch, and the per-session API and VNC credentials — written with `fsync` and atomic replace, `0600` files in `0700` directories, rejecting symlinks, with no plaintext fallback. A tombstone has to be durable *before* a container is destroyed. Otherwise a crash at the wrong moment leaves a container nobody knows about.
+Some rules I'd hold to: a persistent profile has exactly one writer. Login checkpoints are atomic and include IndexedDB, because plenty of sites keep their session there rather than in cookies. Disposable copies mount the source read-only and can't write a checkpoint back.
 
-After a broker restart, the journal alone never fills a slot. The broker checks the exact container ID, labels, image, network, and mounts, then runs a 5-second challenge against the runtime inside: process incarnation, epoch, whether Chromium is ready, whether it's busy. A container that fails is quarantined, and it still counts against capacity until it's gone.
+The launcher should keep an encrypted journal of what it started — session, container, image, version, per-session credentials — written with `fsync` and atomic rename, in owner-only files, refusing symlinks, with no plaintext fallback. Write a tombstone *before* destroying a container, or a crash at the wrong moment leaves a container nobody knows about.
 
-## What went wrong
+After the launcher restarts, the journal alone shouldn't bring a session back. Check that the container ID, labels, image, network, and mounts match exactly, then challenge the runtime inside it: are you the same process, at the same version, is Chromium ready, are you busy? Quarantine anything that fails, and keep counting it against capacity until it's gone.
 
-**A saved account came back blank.** In October, a compatibility recovery path had `persistent_profile=False` as its default. If a session had to be re-acquired that way, the user's saved account came back as a fresh, logged-out profile. Nothing crashed. People just found themselves logged out of a site they'd saved. Now the storage policy is derived from freshly authorised SQL on every acquire, never from a default argument.
+## Failure modes worth testing
 
-**The browser started, but the client didn't know.** A user clicked "Open browser" and got an HTTP 499 from the gateway. The browser had actually started. Retrying would have started a second one on the same profile. Instead, the UI now watches, read-only, for up to 10 seconds, and accepts only the same identity at exactly `epoch + 1` with status active. Anything else is shown as uncertain.
+**A recovery path with the wrong default.** Imagine a fallback that re-acquires a session with `persistent=False` as its default argument. One day a session has to go through that path, and the user's saved account comes back as a fresh, logged-out profile. Nothing crashes. People just find themselves logged out. Derive the storage policy from current, authorised state every time, never from a default.
 
-**Access denied isn't empty data.** A real Chromium visit to an official exchange page returned HTTP 403. A plain HTTP fetch of the same URL returned 200 with an empty app shell. For a while both paths produced "successful" results with nothing in them, and the agent concluded there was nothing to report. Now a denial is a typed `unavailable` result and the agent has to say it couldn't read the page.
+**The browser started but the client didn't hear about it.** The user clicks "Open browser" and gets a gateway timeout or a 499. The container actually started. Retrying would start a second one on the same profile. Instead, observe read-only for a few seconds and accept only the same identity at exactly the next version, in an active state. Anything else is shown as uncertain.
 
-**Sessions outlived their browsers.** This was the big one, in late October. After broker restarts, idle cleanup, or expired 30-minute leases, sessions in the database pointed at containers that no longer existed. Users saw "410 browser_runtime_replacement_required … start a fresh session". The shared research browser failed every agent call with `stale_browser_session`, and the traces showed agents retrying over and over. One morning, every live session had no container behind it.
+**Access denied that looks like empty data.** A real browser visit to some official site returns 403. A plain HTTP fetch of the same URL returns 200 with an empty app shell. If both are treated as "successful, nothing found", the agent will confidently report that there's nothing to report. A denial should be a typed "unavailable" result the agent has to acknowledge.
 
-The fix is a recovery rule I'm fairly proud of:
+**Sessions that outlive their browsers.** Restarts, idle cleanup, and expired leases leave database rows pointing at containers that no longer exist. If the agent's response to "stale session" is to retry, you get loops. The rule I'd use:
 
 ```python
-if broker.confirms_lost(session):      # an outage is not a loss
-    restart_same_identity(session)     # reopen the URL only
-    if action in READ_ACTIONS:         # navigate, snapshot, query, extract...
+if launcher.confirms_lost(session):   # unreachable is not the same as lost
+    restart_same_identity(session)    # reopen the last URL only
+    if action in READ_ONLY:           # navigate, read, query, scroll...
         return rerun(action)
-    return {"error": "browser_restarted"}  # never replay a click
+    return Error("browser_restarted")  # never replay a click
 ```
 
-First, confirm the loss with the broker, because a broker that's briefly unreachable is not a lost session. Then restart the same identity and reopen the URL. Agent tools recover once. Reads are re-run. Anything that might have changed the page returns `browser_restarted`, and the agent has to decide what to do with that. We never replace a session a person is controlling, or one with an action in flight.
+Confirm the loss first, because a launcher that's briefly unreachable hasn't lost anything. Restart the same identity and reopen the URL. Re-run reads. Anything that might have changed the page returns an error the agent has to handle. And never replace a session a person is controlling, or one with an action in flight.
 
-## What I'd tell someone starting this
+## Start read-only
 
-Pick your isolation unit first. Ours is a container per session, with its own profile and its own network path. Multiple browser contexts inside one Chromium is cheaper, and we've reviewed a design for it, but we haven't shipped it because the isolation story is weaker.
+The last decision is the most important: what the agent may *do*. I'd classify actions in tiers — observe, read, draft input, consequential, prohibited — and start with reads and narrowly approved drafts. Submitting a form or placing an order through a website should wait for an approval mechanism you're willing to stand behind. There's more on that in [the human-in-the-loop post](/blog/human-in-the-loop-ai-approval-authorization/).
 
-And decide early what the agent is allowed to *do*. We classify actions from R0 (observe) to R4 (prohibited). Today the agent gets reads and narrowly approved draft-only input. Anything consequential — submitting a form, placing an order through a website — waits for an approval mechanism we're willing to stand behind. So far, read-only has covered most of what people actually asked for.
+Cheaper designs exist — several browser contexts inside one Chromium, for instance — and they're tempting at scale. I'd only move to them once the isolation story is as clear as a container per session. Read-only covers more of what people actually want than you'd expect.

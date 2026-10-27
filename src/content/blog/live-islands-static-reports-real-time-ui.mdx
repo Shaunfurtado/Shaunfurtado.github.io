@@ -1,6 +1,6 @@
 ---
-title: Live Prices Inside an AI-Written Answer
-description: How Ananta turns a closed token in the agent's markdown into a live price chip — surviving the sanitiser, sharing one WebSocket per chat, falling back to an as-of snapshot — plus the bugs a real browser test found.
+title: Live Numbers Inside a Static Answer
+description: How to put real-time values into AI-written text safely — an explicit closed token instead of guessing, a component the sanitiser can't break, one shared subscription per conversation, and a display that always says whether a number is live.
 pubDate: '2026-12-29'
 tags:
 - frontend-development
@@ -11,93 +11,100 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/live-islands-static-reports-real-time-ui/
-seoTitle: 'Live Islands in AI Answers: Tokens, Shared Sockets, and Snapshots'
+seoTitle: 'Live Islands in AI-Written Text: Tokens, Shared Sockets, and Snapshots'
 series: Systems in Practice
 articleId: 14
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
-An agent answer about markets goes stale almost immediately. "Infosys is at 1,512, up 0.8%" is true when it's written and quietly wrong five minutes later, while the user is still reading the paragraph and deciding what to do.
+An AI answer about markets starts going stale as soon as it's written. "The stock is at 1,512, up 0.8%" is true at 10:42 and quietly wrong at 10:47, while the reader is still on the paragraph and deciding what to do about it.
 
-We didn't want to re-run the agent to refresh a number, and we definitely didn't want the model streaming prices. So answers in Ananta can contain *live islands*: small chips inside otherwise static text that show the current price when one is available, and an honest snapshot when it isn't.
+Re-running the model to refresh a number is expensive and pointless. Having the model stream prices is worse. What you actually want is for the answer to stay a static document — the reasoning, the comparison, the conclusion — with a few small *islands* inside it that show the current value when one is available and say clearly when it isn't.
 
-## A closed token, not free text
+Getting there is mostly about boundaries: what the model is allowed to mark as live, how that mark survives your markdown pipeline, and how many connections a page full of islands should open.
 
-The agent doesn't get to decide what's live by writing a price in a sentence. It writes a token:
+## Make "live" explicit and closed
+
+The first decision is to *not* detect prices in prose. It's tempting — scan the text for "TICKER at 1234" and attach a ticker. It goes wrong in the most misleading way possible. A strike price, an analyst target, or last year's close starts ticking live next to a sentence that was about something else.
+
+So the model has to ask for a live value explicitly, with a small token you design:
 
 ```text
-{{ltp:NSE:INFY|ltp=1512.40|chgPct=0.81|asOf=2026-09-03T10:42:00+05:30}}
+{{price:NSE:INFY|last=1512.40|change=0.81|asof=2026-12-29T10:42+05:30}}
 ```
 
-The grammar is closed. Exchange and symbol, then at most four attributes — `asOf`, `chgPct`, `kind`, `ltp` — and nothing else. Values containing quotes, angle brackets, or backticks are dropped, as is anything that looks like an `on*` handler. There's a cap of 24 islands per message.
+Keep the grammar closed. An exchange and a symbol, then a short, fixed list of attributes and nothing else. Drop values containing quotes, angle brackets, or backticks, and anything that looks like an event handler. Cap the number of islands per message so a runaway answer can't open a hundred subscriptions. Historical numbers stay plain text.
 
-We deliberately don't detect "INFY at 1512" in prose. Guessing which numbers are prices is how a strike price, a target, or last year's close starts ticking live next to a sentence that was about something else. If the agent wants a live number, it asks for one explicitly. Historical numbers stay plain text.
+The attributes in the token are a *snapshot*: what the model saw when it wrote the sentence. They matter later.
 
-The backend normalises tokens before the answer is stored, including upgrading an older `{{quote:…}}` format, so the frontend only has to understand one.
+Normalise tokens on the server before the answer is stored, including any older formats you used to accept, so the client only has to understand one shape.
 
-## Getting through the sanitiser
+## Get through the sanitiser instead of around it
 
-Chat markdown is rendered with Streamdown, which sanitises the HTML. That's good — it strips unknown tags and rewrites custom URL schemes to `[blocked]`. It also meant that every clever way of smuggling a custom element through got eaten.
+If you render model output as markdown, you should be sanitising it. A good sanitiser strips unknown tags and blocks unknown URL schemes, which is exactly what makes it hard to sneak a custom element through. Every clever trick — a custom tag, a `data:` attribute, a special scheme — gets eaten, as it should.
 
-So we stopped smuggling. Before rendering, each token becomes an ordinary relative link:
+So don't sneak. Turn the token into something the sanitiser already allows: an ordinary relative link with a reserved path prefix.
 
 ```ts
-// {{ltp:NSE:INFY|ltp=1512.40}}  ->  [INFY](/__ananta-ltp__/NSE/INFY?ltp=1512.40)
+// {{price:NSE:INFY|last=1512.40}}  ->  [INFY](/_live/price/NSE/INFY?last=1512.40)
 ```
 
-A relative link survives the sanitiser untouched. Our markdown link renderer recognises the `/__ananta-ltp__/` prefix and renders a `LiveLtpIsland` component instead of an anchor. React builds the DOM. The model never supplies any of it.
+A relative link passes through untouched. Then your markdown renderer's link override recognises the reserved prefix and renders a live price component instead of an anchor. React builds the DOM. The model never supplies a tag, an attribute, or a handler. It supplies a string your parser accepted.
 
-## One subscription per chat, not per chip
+## One subscription per conversation
 
-A research answer can easily have twenty islands, and a chat can have several answers. A socket per chip would be absurd.
+An analytical answer can easily contain twenty islands, and a conversation can have several answers. A socket per chip would be absurd.
 
-Each chat has one `LivePriceIslandProvider`. Every island registers what it needs, and the provider merges those into a de-duplicated list keyed by `EXCHANGE:SYMBOL`, then opens a single live-price subscription for the chat. The flow:
+Put a provider at the conversation level. Each island registers what it needs, and the provider merges those into a deduplicated set keyed by `EXCHANGE:SYMBOL` and holds one subscription for all of them. A shape that works:
 
-- Every 30 seconds, and whenever the tab becomes visible again, the client posts its demand to an authenticated endpoint, scoped to the chat.
-- It opens a WebSocket and must send a `subscribe` message naming the account, broker, and symbols within five seconds, or the server closes it.
-- The server intersects the request with the user's actual subscriptions, then reads that user's Redis price streams and sends a snapshot first, then ticks.
-- The client batches incoming ticks for 200 ms before re-rendering, so a busy market doesn't redraw the chat thirty times a second.
+- The client periodically tells an authenticated endpoint what this conversation needs — say every 30 seconds, and again when the tab becomes visible — so demand expires on its own if the page is closed.
+- It opens a WebSocket and has to send a subscribe message within a few seconds, or the server closes it.
+- The server intersects the request with what that user is actually entitled to, sends a snapshot of current values first, then ticks.
+- The client batches incoming ticks for a short window — 100 to 200 ms is plenty — before re-rendering, so a busy market doesn't redraw the page thirty times a second.
 
-Chat run events use server-sent events. Prices use a WebSocket. That isn't inconsistency. Run events are a log: every event matters, they're numbered, and a reconnect resumes from the last sequence. Prices are latest-value: if you missed ten ticks, you want the eleventh, not a replay. Different data needs a different recovery story.
+You'll probably use server-sent events elsewhere for the agent's own progress, and it's fine to use a WebSocket here. The two streams have different recovery semantics. Run events are a log: each one matters, they're numbered, and a reconnect should resume from the last sequence. Prices are latest-value: if you missed ten ticks, you want the eleventh, not a replay. Choose the transport for the recovery story you need.
 
-<ArticleDiagram stem="14-live-islands-static-reports-real-time-ui" alt="Fig. 1 — The agent writes closed tokens. The frontend turns them into island components that share one provider, one demand registration, and one WebSocket per chat. The canvas iframe gets ticks by postMessage." />
+<ArticleDiagram stem="14-live-islands-static-reports-real-time-ui" alt="Fig. 1 — The model writes closed tokens. The renderer turns them into components that share one provider and one subscription per conversation. Embedded canvases receive values by postMessage instead of opening their own connection." />
 
-## Live, snapshot, or nothing
+## Live, snapshot, or nothing — and say which
 
-Each island shows one of three things:
+Each island should be in exactly one of three states, and should show it:
 
 ```ts
-const ltp = liveTick?.ltp ?? snapshot.ltp ?? null;
-const isLive = liveTick?.ltp != null;
-const asOf = isLive ? null : snapshot.asOf;
+const value = live?.last ?? snapshot.last ?? null;
+const isLive = live?.last != null;
+const asOf = isLive ? null : snapshot.asof;
 ```
 
-A live tick is shown in normal colour. Without one, the snapshot from the token is shown muted, with its "as of" time. With neither, an em dash. The accessible label reads as a sentence — "INFY 1,512.40 rupees, up 0.81%, live" — rather than a cluster of numbers.
+A live value in normal colour. Without one, the snapshot from the token in a muted style, with its "as of" time. With neither, an em dash — never a zero. A missing price rendered as `0.00` doesn't look like missing data. It looks like the stock collapsed.
 
-Copying an answer copies the numbers *currently on screen*, flattened to text like `INFY 1512.40 (+0.81%)`, not the raw token. Live ticks are never fed back to the model. They're for the person reading.
+Make the accessible label read as a sentence ("INFY 1,512.40 rupees, up 0.81 percent, live") rather than a cluster of numbers. And when someone copies the answer, copy the values *currently shown*, flattened to plain text, not the raw token. Don't feed live values back into the model's context. They're for the person reading, and they'd change the conversation's prefix every second.
 
-## Islands inside canvases
+## Embedded canvases shouldn't open their own sockets
 
-Canvases built with the HTML kit run in a sandboxed iframe with an opaque origin. They can't open their own socket, and we wouldn't want them to. The parent page posts ticks to the iframe, and the kit's script inside only accepts a message if it came from its actual parent window:
+If answers can contain sandboxed HTML canvases, those canvases will want live values too. Don't give them network access. Have the parent page forward ticks with `postMessage`, and have the script inside the frame check the sender:
 
 ```js
-window.addEventListener("message", (e) => {
-  if (e.source !== window.parent || e.data?.type !== "aw-ltp") return;
-  repaint(e.data.ticks);   // keyed by EXCHANGE:SYMBOL
+window.addEventListener("message", (event) => {
+  if (event.source !== window.parent || event.data?.type !== "price-ticks") return;
+  repaint(event.data.ticks);   // keyed by EXCHANGE:SYMBOL
 });
 ```
 
-## What the real-browser test found
+Because the frame has an opaque origin, the parent can't target it by origin, so the `event.source` check is what stops another window from feeding it fake numbers.
 
-In mid-October we ran a positive and negative test of all this in a real sandboxed Chromium, and it found four bugs that unit tests hadn't:
+## The bugs this design invites
 
-1. **Wrong exchange, same symbol.** The tick cache was keyed by symbol only, so a BSE tick, or a tick from a different account, could overwrite an NSE observation the user had selected. Keys now include exchange and account.
-2. **Any window could post ticks.** The canvas accepted price messages from any window, not just its parent. Now it checks `e.source`.
-3. **Null became zero.** A missing price attribute rendered as `0.00`. For a price, that's not a harmless default — it looks like the stock collapsed. It's an em dash now.
-4. **M&M.** Symbols with `&` in them fell outside the token grammar, and the raw token text leaked into the answer. The grammar now allows it.
+These are the ones I'd test for before anything else, ideally in a real browser rather than a unit test, because they live in the seams between components:
 
-A week later we found a quieter issue upstream. Our REST poller handles 100 symbols per batch. Active workflows were pinning about 213, sliced in an order that changed every 30 seconds — so some symbols weren't polled for minutes, and their islands and alerts went stale with nothing visibly wrong. Overflow now rotates in a stable order.
+1. **Same symbol, different venue.** If your tick cache is keyed only by symbol, a tick from another exchange, or from a different account's feed, can overwrite the observation the user selected. Key by exchange, and by account if entitlements differ.
+2. **Any window can talk to the frame.** Forget the `event.source` check and any page that can get a reference to the frame can post prices into it.
+3. **Null becomes zero.** Covered above. It deserves a test of its own.
+4. **Symbols with odd characters.** Tickers like `M&M` will fall outside a naive token grammar, and the raw token text leaks into the answer. Decide the allowed character set from real exchange symbol lists, not from the alphabet.
+5. **Silent upstream starvation.** If prices come from a poller with a batch limit, and demand exceeds the batch, an unstable slicing order can leave some symbols unpolled for minutes. Their islands keep showing an old value with nothing visibly wrong. Rotate the overflow in a stable order, and measure each symbol's staleness.
 
-## What I'd still change
+## What a good island still lacks
 
-Ticks are merged last-write-wins, with missing fields filled in from the previous value. That's fine for one feed per symbol, and it's the next thing to tighten if we add a second. Reconnects wait a fixed 2.5 seconds rather than backing off. And an island doesn't yet mark itself stale if ticks stop arriving while the socket stays open. It just keeps showing the last live value. That's on the list, because the most important thing a live price can tell you is when it stopped being live.
+Two things I'd add before calling this finished. First, ordering: last-write-wins is fine with one feed per symbol, and wrong as soon as two feeds disagree. Carry the source's own sequence or timestamp and refuse older values. Second, staleness: an island whose socket is open but whose ticks have stopped is the most dangerous state of all, because it looks live. After a timeout appropriate to the instrument, it should drop back to the muted "as of" display by itself.
+
+The most important thing a live number can tell you is when it stopped being live. Everything else in this design is in service of that.

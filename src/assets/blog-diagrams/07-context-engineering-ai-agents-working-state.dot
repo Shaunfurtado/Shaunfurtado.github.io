@@ -1,16 +1,15 @@
 digraph context {
-rankdir=LR;
-audit [label="SQL audit events\nfull + public payloads", class="key"];
-ui [label="UI events\nvisibility filter → SSE"];
-proj [label="projectors\n4,000 / 1,200 char caps"];
-summary [label="compaction summary\n(optional)"];
-input [label="model input\n≤ 120k chars"];
-tail [label="trailing block\nhooks · skills · status bar"];
-prefix [label="cached prefix\nsystem + tool schemas", class="ghost"];
-audit -> ui;
-audit -> proj;
-proj -> input [label="prior turns"];
-summary -> input;
-tail -> input [label="appended last"];
-prefix -> input [label="unchanged", style=dashed];
+rankdir=TB;
+log [label="event log\nfull + public payloads", class="key"];
+ui [label="UI stream\nvisibility filter"];
+subgraph cluster_input {
+  label="model input, in order";
+  prefix [label="1. cached prefix\nsystem + tools", class="ghost"];
+  summary [label="2. summary (optional)"];
+  proj [label="3. prior turns\nper-tool caps"];
+  tail [label="4. trailing block\nhooks · procedures · status"];
+}
+log -> ui;
+log -> proj [label="projectors"];
+prefix -> summary -> proj -> tail [style=dashed];
 }

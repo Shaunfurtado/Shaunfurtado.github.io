@@ -1,6 +1,6 @@
 ---
-title: Two Redis Instances, Opposite Rules — How Ananta Uses Redis
-description: A cache that may forget everything and a store that must not, a Lua script that refuses stale quotes, a single-owner tick evaluator, and why our live streams are hints while SQL stays the truth.
+title: One Redis, Too Many Jobs — Split It by What You Can Afford to Lose
+description: Caches, queues, streams, leases, and wake-up hints have opposite failure contracts. Separate instances by eviction policy, refuse stale writes in Lua, fence stream consumers, and keep SQL as the source of truth.
 pubDate: '2026-11-10'
 tags:
 - redis
@@ -11,88 +11,109 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/redis-production-patterns-cache-queues-locks/
-seoTitle: 'Redis in Production: Caches, Streams, Leases, and Failure Contracts'
+seoTitle: 'Redis in Production: Eviction Policies, Monotonic Writes, Streams, and Leases'
 series: Systems in Practice
 articleId: 6
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
-Redis does a lot of different jobs in Ananta: instrument search cache, latest-quote cache, a write-behind buffer for quotes, RQ queues, live tick streams for alerting, leases, and wake-up hints for server-sent events. For a while it did all of them in one instance with one configuration, which meant the configuration was wrong for most of them.
+Redis tends to accumulate responsibilities. It starts as a cache. Then it's the job queue, because it's already there. Then live price streams, a few distributed locks, a write-behind buffer, and wake-up signals for server-sent events. Each addition is reasonable on its own. Together they end up sharing one `maxmemory-policy` and one persistence setting, and that single configuration is wrong for at least half of them.
 
-## Split by what you're allowed to lose
+The question I find most useful for any key pattern in Redis is: *what happens if this data disappears right now?* The answers vary a lot, and they should drive the configuration.
 
-The fix was to stop thinking of Redis as one thing. In the Postgres deployment there are two instances with opposite rules:
+## Two instances with opposite rules
 
-| | `redis-cache` | `redis` |
-|---|---|---|
-| Holds | instrument search results | queues, streams, leases, quote buffer |
-| Memory | 192 MB, `allkeys-lfu` | 512 MB, `noeviction` |
-| Persistence | none | AOF, `appendfsync everysec` |
-| If it's wiped | slower searches | lost work, unless SQL has it |
+Look at a typical mixed workload through that question:
 
-The cache can evict anything at any time, and losing all of it costs some latency. The other instance must never evict — an evicted queue entry is a run that silently never happens — so it refuses writes when full, and that's an alert, not a degradation. Putting both workloads under one `maxmemory-policy` means one of them is always configured wrong.
+| Pattern | If it vanishes |
+|---|---|
+| Search-result cache | Slower requests, nothing else |
+| Latest-price cache | Recomputed from the next tick |
+| Job queue entries | Work silently never runs |
+| Stream consumer checkpoints | Events reprocessed or skipped |
+| Leases | Two processes think they own something |
 
-## A cache key is part of the permission model
+The first two can be evicted at any time. The last three must never be evicted, and should survive a restart. You can't have both under one `maxmemory-policy`. With `allkeys-lfu`, Redis will cheerfully evict a queued job to make room for a cached search. With `noeviction`, a cache that grows past its budget starts failing writes to your queue.
 
-The quote cache key looks like this:
+So split them. One instance for disposable data: `allkeys-lfu`, no persistence, a modest memory cap. Another for things that matter: `noeviction`, AOF with `appendfsync everysec`, and an alert when it's close to full, because for this instance "full" means "refusing work". Running two small Redis processes costs almost nothing compared to debugging why a job evaporated.
+
+## Cache keys are part of your permission model
+
+If cached data was fetched with a particular user's credentials or entitlements, the key needs to say whose it is. A price fetched through one user's market-data subscription shouldn't become a cache hit for another user who doesn't have that subscription.
+
+A key shape I like:
 
 ```text
-ananta:quote:v2:<db fingerprint>:<user>:<account>:<broker>:<EXCHANGE>:<SYMBOL>
+app:price:v2:{deployment}:{user}:{account}:{source}:{exchange}:{symbol}
 ```
 
-Every segment is URL-quoted, so a strange symbol can't break out of its tenant during a `SCAN`. The database fingerprint means two deployments accidentally sharing a Redis can't read each other's keys. User and account are in there because quotes come through a user's own broker connection, and one user's entitlement shouldn't become another user's cache hit. A comment in that module says what's deliberately *not* in the key or value: no broker credentials and no cross-account aliases.
+Each segment does a job. The version lets you change the value format without a migration. The deployment fingerprint stops two environments that accidentally share a Redis from reading each other's data. User and account scope the entitlement. URL-quote every segment, so a strange symbol can't break out of its scope during a `SCAN`. And keep credentials out of both the key and the value — it's surprisingly easy to cache a whole upstream response that happens to contain a token.
 
-## Refusing older observations
+## Refuse older observations
 
-Quotes arrive from several places — a live feed, a REST poller, a batched fetch during a scheduled workflow — and they don't arrive in order. A naive `SET` lets a slow poller overwrite a newer tick with an older one. So writes go through one Lua script:
+Prices arrive from several places — a streaming feed, a polling fallback, a batch fetch triggered by a scheduled job — and not in order. A plain `SET` lets a slow poller overwrite a newer tick with an older one, and nobody notices until an alert fires on a price that was already stale.
+
+Make the write conditional on time, and make it atomic with a small Lua script:
 
 ```lua
--- KEYS: quote, clock, pending, dirty   ARGV: json, ts
+-- KEYS: value, clock, pending, dirty    ARGV: payload, ts
 local last = tonumber(redis.call("GET", KEYS[2]) or "0")
-if last > tonumber(ARGV[2]) then return 0 end      -- older than what we have
-redis.call("SET", KEYS[1], ARGV[1], "EX", 30)       -- latest quote, 30s
-redis.call("SET", KEYS[2], ARGV[2], "EX", 604800)   -- clock, 7 days
-redis.call("SET", KEYS[3], ARGV[1], "EX", 604800)   -- pending copy for SQL
-redis.call("ZADD", KEYS[4], ARGV[2], KEYS[3])       -- mark dirty
+if last > tonumber(ARGV[2]) then return 0 end
+redis.call("SET", KEYS[1], ARGV[1], "EX", 30)
+redis.call("SET", KEYS[2], ARGV[2], "EX", 604800)
+redis.call("SET", KEYS[3], ARGV[1], "EX", 604800)
+redis.call("ZADD", KEYS[4], ARGV[2], KEYS[3])
 return 1
 ```
 
-The pending copy and the dirty set are a write-behind buffer. A separate process flushes dirty quotes to SQL snapshots, and acknowledges with another script that only deletes the pending copy if its bytes haven't changed — so a flush can never erase an update that arrived while it was writing.
+The last two lines turn the cache into a write-behind buffer as well: a pending copy plus a sorted "dirty" set that a separate process drains into SQL. When that process acknowledges a flush, it should delete the pending copy only if its bytes haven't changed since it read them — another short Lua script. Otherwise a flush can erase an update that landed while it was writing.
 
-Ingestion also rejects zeros and errors. A missing or zero price isn't a market observation, and caching it means an alert might fire on "price fell to 0".
+Also reject values that aren't observations. A zero or missing price is an error from upstream, not a market event, and caching it is how you get "price fell to 0" alerts.
 
-The client side is deliberately impatient: a 0.3-second connect timeout, 0.5-second socket timeout, no retries, and a five-second local circuit after a failure. If Redis is slow, the caller still gets the direct broker result. Retrying a cache read only adds load to something that's already struggling.
+On the client side, I'd make cache reads impatient: sub-second connect and socket timeouts, no retries, and a short local circuit breaker after a failure. If Redis is struggling, fall through to the source of truth. Retrying a cache read only adds load to the thing that's already behind.
 
-## One evaluator, a fenced checkpoint
+## One consumer, a fenced checkpoint
 
-Live alerting reads ticks from per-account Redis Streams (`live:ticks:<user>:<account>:<broker>`, capped at about 2,000 entries). We don't use consumer groups. Exactly one evaluator process owns all the streams, through an owned lease with a 15-second TTL, and reads with plain `XREAD`.
+For an ordered computation over a stream — say, evaluating alert rules tick by tick, where "crossed above" depends on the previous value — I usually prefer one owner over consumer groups. Consumer groups spread entries across consumers, which is great for independent jobs and awkward when every entry depends on the one before.
 
-Progress is a checkpoint key per stream, written by a Lua script that refuses if the caller no longer holds the lease or if the offset would move backwards. Evaluator state is keyed by the owner's token, so an old process that wakes up after losing its lease can't corrupt the new owner's state.
+The single-owner version looks like this. One process holds a lease (`SET key token NX PX 15000`). It reads with plain `XREAD`. Its progress is a checkpoint key per stream, written by a Lua script that refuses unless the caller still holds the lease *and* the new offset is ahead of the old one. Any state it keeps — rolling windows, previous values — is namespaced by its lease token, so a paused process that wakes up after losing its lease can't corrupt its successor's state.
 
-If the oldest entry still in the stream is newer than our checkpoint, the stream was trimmed past us and we've lost ticks. The evaluator treats that as a continuity break and starts a new epoch, so a rolling window or a "crossed above" condition isn't computed across a gap it can't see.
+Then handle the gap. Streams are usually capped with `MAXLEN ~ N`. If the oldest entry still in the stream is newer than your checkpoint, entries were trimmed before you read them. Don't pretend otherwise: start a new epoch and reset any computation that depended on continuity. A "crossed above" across a gap you can't see is a guess.
 
-<ArticleDiagram stem="06-redis-production-patterns-cache-queues-locks" alt="Fig. 1 — The cache instance can evict anything. The durable instance holds quotes, tick streams, and a dirty set that a flusher writes to SQL. A single lease-holding evaluator turns ticks into alerts." />
+<ArticleDiagram stem="06-redis-production-patterns-cache-queues-locks" alt="Fig. 1 — Disposable data goes in an evicting instance. Prices, streams, and the write-behind buffer go in a durable one. A single lease-holding consumer and a flusher write the results to SQL." />
 
-## Leases are an optimisation; SQL fences
+## Leases are an optimisation
 
-Every lease in the system is `SET NX EX` with a random token, renewed and released only by Lua compare-and-set scripts. A `GET` then `EXPIRE` from Python can extend the *next* owner's lease if yours expired in between.
+Every lease should be `SET NX` with a random token, renewed and released only through compare-and-set scripts:
 
-A Redis lease still isn't a lock you can bet money on. A process can pause for longer than its TTL. So wherever correctness matters, SQL has the final say: runs carry an attempt and an epoch, and scheduled jobs are claimed with a compare-and-swap on the whole row. The scheduler's leader lease only decides who bothers to check. As one comment puts it, the database decides who owns a due row.
+```lua
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+end
+return 0
+```
+
+The tempting Python version — `GET`, compare, then `EXPIRE` — has a gap. If your lease expires between the two calls and someone else acquires it, your `EXPIRE` extends *their* lease. Renewal should never re-acquire a lease you've lost, either.
+
+Even done right, a Redis lease isn't a lock you should bet correctness on. A process can pause for longer than its TTL — a GC pause, a VM hiccup — and wake up still believing it owns something. Martin Kleppmann's [note on distributed locking](https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html) covers why. So where correctness matters, let the database fence: an epoch or version column checked in the same `UPDATE` that does the work. The Redis lease then just decides who *bothers* to try, which saves wasted effort without carrying any guarantee.
+
+One small, very real bug: if the code between acquiring a lease and the `try` that releases it can raise — a missing configuration check, say — the lease stays held until its TTL. With a long TTL and a periodic job, that looks like a job that silently stopped. Acquire as the last step before the guarded block.
 
 ## Streams as hints, SQL as truth
 
-Chat events are written to SQL. Redis gets a much smaller `XADD` with only the sequence number, event type, and id — enough to wake up anyone streaming that run to a browser. If the `XADD` fails, we stop sending hints for 15 seconds and readers fall back to polling SQL.
+For server-sent events on top of a database-backed event log, I like using Redis Streams as a doorbell rather than a mailbox. The event goes into SQL. Redis gets a tiny `XADD` with just the sequence number — enough to wake up whoever is streaming that log to a browser.
 
-The SSE reader takes the stream tail *before* it reads from the database. Anything committed concurrently is then either in that read or in the next `XREAD`, so nothing slips between the two. SQL reads are capped at five per second per viewer, connections have a bounded lifetime so a reconnect re-checks authorisation, and a terminal status in SQL ends the stream even if the terminal event's hint was lost.
+The reader then does this:
 
-Notification streams go further: every notification is re-read from SQL before it's sent, and old Redis payloads are never replayed.
+1. Read the tail ID of the stream.
+2. Read new events from SQL.
+3. `XREAD BLOCK` from the tail ID you captured in step 1.
+4. When woken, go back to step 2.
 
-## Things that went wrong
+Capturing the tail *before* the database read closes the race: anything committed in between either shows up in that read or wakes the next `XREAD`. If the `XADD` fails, readers fall back to polling SQL on a timer, rate-limited per viewer. Cap connection lifetime so reconnects re-check authorisation. And let a terminal status in SQL end the stream, even if its wake-up hint was lost.
 
-**Blocking reads on threads.** The first SSE implementation used synchronous `XREAD` inside `asyncio.to_thread`. With a few dozen viewers, each five-second blocking read held a thread and competed with unrelated work. Moving to `redis.asyncio` fixed it. A later test with 50 notification viewers showed zero idle database transactions.
+Use an async client for this. Blocking `XREAD` calls run in a thread pool hold one thread each for the whole block timeout, and with a few dozen viewers that starves everything else using the pool.
 
-**An evaluator a minute behind.** In October the alert evaluator was running about 57 seconds behind the quote stream — roughly 35 ticks a second coming in against a capacity of about 37. Ticks older than 60 seconds are skipped on purpose, so we were close to silently missing alerts. The cause was re-parsing each matching workflow's rule definition, and re-querying instrument metadata, on every tick. Caching the parsed plan per saved revision, and instrument scope for an hour, brought it back to real time.
+## The sentence test
 
-**A lease held by an exception.** A connector without credentials raised an error before the code that releases its sync lease. The lease stayed held, no error was recorded, and the connector just stopped syncing. We found it on a live rollout. Now that path records the error and gives the lease back like any other failure.
-
-The common thread: each pattern in Redis needs a sentence saying what happens when its data disappears. If you can't write that sentence, it shouldn't be in Redis — or SQL should be holding the real copy.
+Before adding a new key pattern, try writing one sentence: "If this data disappears, then…". If the sentence ends with "we recompute it", it's a cache, so put it on the evicting instance. If it ends with "the database still has it", Redis is an accelerator, so design the fallback. If you can't finish the sentence, the data probably shouldn't live only in Redis.

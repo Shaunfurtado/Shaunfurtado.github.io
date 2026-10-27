@@ -1,6 +1,6 @@
 ---
-title: The Boring Machinery Behind a Trustworthy AI Agent
-description: What I learned building the execution layer of a self-hosted agent platform — run ownership, fenced leases, app-owned retries, and why an uncertain outcome should become a receipt, never a silent retry.
+title: The Boring Machinery That Makes an AI Agent Trustworthy
+description: Run ownership, fenced leases, application-owned retries, and one rule above the rest — an uncertain outcome should become a visible receipt, never a silent retry.
 pubDate: '2026-10-27'
 tags:
 - ai-agents
@@ -11,95 +11,91 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/architecting-deterministic-infrastructure/
-seoTitle: 'Deterministic AI Agent Infrastructure: Ownership, Leases, Receipts'
+seoTitle: 'Deterministic AI Agent Infrastructure: Ownership, Leases, and Receipts'
 series: Systems in Practice
 articleId: 1
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
-For most of this year I've been the main engineer on the enterprise build of Ananta Market Stack, a trading and market-data workspace that we deploy on the client's own server. There's no shared cloud tenant. Each client gets the whole stack — API, frontend, Redis, workers, a code sandbox, an isolated browser plane, and an agent that can use all of it — running under Docker Compose on a machine they control.
+Most writing about AI agents is about the model: prompts, tools, reasoning. Very little is about the machinery underneath — who owns a run, what happens when the process executing it dies, and whether anything can be safely repeated afterwards. That machinery decides whether an agent is trustworthy far more than the prompt does.
 
-That constraint shaped almost every decision. When something breaks at 2 a.m. on a client's VPS, there is no platform team and no managed queue to blame. The system has to explain itself, recover without guessing, and refuse to do anything it can't account for.
+I think about this mostly through one kind of system: a self-hosted agent platform that runs on the customer's own server. No shared cloud tenant, no managed queue, no platform team. The whole stack — API, workers, Redis, a code sandbox, a browser, and an agent that can use all of them — runs under Docker Compose on one machine. When something breaks at 2 a.m., the system has to explain itself, because nobody else will.
 
-This post is about the unglamorous part: the machinery that decides who owns a run, what happens when a worker dies halfway through, and how we stopped the system from "helpfully" repeating things it shouldn't.
+That constraint makes the trade-offs unusually clear, so it's a good lens for the general problem.
 
-## The model never gets to decide infrastructure questions
+## Keep infrastructure decisions away from the model
 
-The first rule we wrote down sits in the docstring of our plane supervisor: the model never decides whether containers should be restarted, waited on, or replaced.
+The first rule I'd write down: the model never decides whether a container should be restarted, waited on, or replaced.
 
-It sounds obvious. It isn't, once you have an agent with tools like "run Python" and "open a browser". The tempting design is to let the agent see a failure and retry the tool. Then a sandbox broker hiccup turns into three identical code runs, or a browser that was actually still starting gets a second one stacked on top of it.
+It sounds obvious until you give an agent tools like "run Python" and "open a browser". The tempting design is to let the agent see a failure and try again. Then a sandbox service that was briefly unreachable turns into three identical code runs, or a browser that was still starting gets a second one stacked on the same profile.
 
-So every execution plane — sandbox, browser, workers — reports the same small health row (`available`, `runtime`, `reason`, `capabilities`), and recovery is plain code with fixed numbers: three attempts, backoff between 0.35 and 3 seconds, a 20-second readiness timeout, and a circuit that opens after four failures for twenty seconds. When a plane is down, the chat tools fail closed and say so. The agent sees `browser plane unavailable: <reason>`, not a stack trace it might try to reason its way around.
+Instead, each execution backend reports a small, uniform health record — available or not, which runtime, why — and recovery is plain code with fixed numbers. Something like: three attempts, a short jittered backoff, a readiness timeout, and a circuit breaker that opens after a few consecutive failures. When a backend is down, the tool fails closed and says so in words a person can act on. The agent gets "browser unavailable: no isolating runtime on this host", not a stack trace it will try to reason its way around.
 
-## Topology follows trust, not team boundaries
+## Draw the topology around trust
 
-The stack is one Compose file with profiles. The default profile is deliberately tiny: a bootstrap step that generates secrets on first boot, Redis, the backend, and the frontend. Everything with a larger blast radius is opt-in:
+With Compose, profiles are a cheap way to make the default install small and opt into risk. The core profile has the API, the frontend, Redis, and a bootstrap step that generates secrets on first boot. Everything with a bigger blast radius — the code sandbox, the browser, the worker pools — is a separate profile someone has to turn on.
 
-- `sandbox` adds a sandbox broker and a gVisor bootstrap.
-- `browser` adds a browser broker and a Squid egress proxy.
-- `workers` adds the chat, subagent, workflow, scheduler, and live market-data workers.
+Two details carry more weight than they look. Only the services that launch containers get the Docker socket; the API never does. And the browser's network is marked `internal: true`, so the only way a browser session reaches the internet is through an egress proxy.
 
-Two details in that file carry more weight than they look like they should. Only the two brokers mount the Docker socket — the backend and frontend never do. And the browser network is `internal: true`, so the only way out to the internet from a browser session is through Squid.
+<ArticleDiagram stem="01-architecting-deterministic-infrastructure" alt="Fig. 1 — Trusted services share a control network. Only the two launchers hold the Docker socket, and browser sessions can reach the internet only through the egress proxy." />
 
-<ArticleDiagram stem="01-architecting-deterministic-infrastructure" alt="Fig. 1 — Trusted services share the control network. Only the brokers hold the Docker socket, and browser sessions can only reach the internet through the egress proxy." />
+For a single-customer deployment I'd pick this over Kubernetes without much hesitation. Kubernetes brings scheduling you don't need on one machine, and it moves failure modes somewhere the customer's IT team can't see them.
 
-We chose Compose plus a small host controller over Kubernetes because each deployment is one client on one large machine. Kubernetes would have handed us scheduling we didn't need and moved the failure modes somewhere the client's IT team couldn't see them.
+## Every run has exactly one owner
 
-## Every run has exactly one owner, and ownership can be lost
-
-The core primitive is a small immutable record:
+The primitive I keep coming back to is a small, immutable ownership record:
 
 ```python
 @dataclass(frozen=True)
-class RunOwner:
+class Owner:
     run_id: str
-    attempt_id: str
+    attempt: str
     epoch: int
-    worker_id: str
+    worker: str
 ```
 
-A worker that picks up a run starts a `LeaseKeeper` thread that renews the lease every five seconds. If renewal keeps failing for twenty seconds, the worker stops treating the run as its own. It doesn't try to win it back. An old worker must never adopt an attempt that a successor has already claimed.
+A worker that picks up a run holds a lease on it and renews it in the background — say every 5 seconds against a 20-second TTL. If renewal keeps failing past that grace period, the worker stops treating the run as its own. It doesn't try to win it back. An old worker must never adopt an attempt that a newer one has already claimed.
 
-The renewal itself is a Lua compare-and-renew in Redis, because the naive version is wrong in a subtle way:
+Renewal has to be atomic, because the obvious version is subtly wrong:
 
 ```lua
--- KEYS[1] = lease key, ARGV[1] = owner token, ARGV[2] = ttl ms
+-- KEYS[1] = lease key, ARGV[1] = my token, ARGV[2] = ttl in ms
 if redis.call("GET", KEYS[1]) == ARGV[1] then
   return redis.call("PEXPIRE", KEYS[1], ARGV[2])
 end
 return 0
 ```
 
-With `GET` followed by `EXPIRE` from Python, there is a window in which your lease expires, the next owner takes it, and then your `EXPIRE` lands on *their* lease. You've just extended someone else's ownership on the strength of a stale read. Release is a compare-and-delete for the same reason.
+With a `GET` followed by an `EXPIRE` from application code, there's a window where your lease expires, the next owner takes it, and your `EXPIRE` lands on *their* key. You've just extended someone else's ownership based on a stale read. Release has the same problem, so it's a compare-and-delete.
 
-When the worker pool sees a child process exit, it immediately sets `lease_expires_at = now` on that child's running runs, so the next worker doesn't have to wait out a TTL to take over. We only do this when we actually observe the exit. Missing metadata in Redis is not treated as death — that was a lesson from a Redis restart that made several healthy workers look dead.
+When a supervisor actually observes a worker process exit, it should expire that worker's leases immediately rather than make the next worker wait out the TTL. The important word is *observes*. Missing metadata isn't death. A Redis restart can make every healthy worker look dead for a few seconds, and treating that as proof is how you get two owners.
 
-## Retries belong to the application
+## Own your retries
 
-We call the model provider's SDK with `max_retries=0`. All retries are ours.
+I'd call the model provider's SDK with its built-in retries switched off and do retries in the application.
 
-That came from a specific failure. A provider returned a quota error with a `Retry-After` that was hours long, and the SDK, quite reasonably from its point of view, honoured it — inside a job with a 600-second timeout. The run sat there doing nothing until the job was killed, and the user saw a spinner followed by a generic timeout.
+Here's why. Provider SDKs honour `Retry-After`, which is correct from their point of view. But a quota error can come back with a `Retry-After` measured in hours. If that happens inside a job with a ten-minute timeout, the run sits silently until the job is killed, and the user sees a spinner and then a generic error.
 
-Our retry policy classifies failures first: transient transport, rate limited, quota exhausted, unknown tool, repeated tool call, unpaired tool results, and a few more. Each class gets its own treatment. The defaults are three retries (a user can raise it to eight), 2–12 seconds of backoff, a cap of 60 seconds on any server-requested delay, and a 75-second limit on an idle stream. Quota exhaustion isn't retried at all. It becomes a clear message.
+An application-level policy can classify the failure first — transient network error, rate limit, exhausted quota, unknown tool, repeated identical tool call, a tool result without a matching call — and treat each class differently. Rate limits get backoff with a cap on any server-requested delay. Exhausted quota isn't retried at all; it becomes a clear message. An idle stream gets a hard limit rather than waiting forever for the next token.
 
-## An uncertain outcome becomes a receipt
+## Turn uncertainty into a receipt
 
-This is the idea I'd keep if I had to throw the rest away.
+This is the idea I'd keep if I had to throw away everything else.
 
-When a worker dies, some calls are in a state nobody can resolve from the inside. A model call was dispatched but no usage event came back. A browser was asked to start and the client got an HTTP 499, but the container may well be running. In each case the tempting move is to retry, and in each case retrying can double the effect.
+When a worker dies, some operations are in a state nobody can resolve from the inside. A model call was sent but no usage came back. A browser was asked to start and the client got an HTTP 499, but the container may well be running. In each case the tempting move is to retry, and in each case a retry can double the effect.
 
-We don't. An interrupted model call becomes a visible "unavailable" entry in the run's ledger. A recovery ledger carries the *accepted* results and the exact resource and call identities across a crash, so the next attempt can continue from facts. Its own docstring is blunt about its limits: it cannot make an interrupted mutation safe to repeat.
+So don't. Record an interrupted call as a visible "outcome unknown" entry in the run's history. Carry the *accepted* results — and the exact identities of resources and calls — across the crash in a small recovery ledger, so the next attempt continues from facts rather than from a reconstructed guess. And be explicit about what that ledger can't do: it can't make an interrupted mutation safe to repeat.
 
-Reads are different. Inside a run, a read can be replayed, with one in-flight call per read. A successful write bumps a per-domain epoch (workflows, watchlists, skills, workspace, external), so a read → edit → verify sequence isn't mistaken for the agent going round in circles.
+Reads are different. Within a run, a read can be replayed, with at most one in-flight call per read. A successful write should bump a per-domain version, so a read → edit → verify sequence isn't mistaken for the agent going round in circles.
 
-## Two incidents that changed the code
+## Two bugs that are easy to write
 
-**Transactions held across model waits.** In early October we found the runner holding SQL read transactions open while it waited on sandbox and browser health checks and MCP teardown — calls that can take seconds. The fix had a trap in it. Rolling back expires ORM objects, so the next time anything touched a field on the run, SQLAlchemy quietly opened a *new* transaction, this time from the SDK's concurrent task. We ended up committing clean reads with `expire_on_commit=False` and rolling back only when the session was actually dirty. We proved it with a real pool of exactly one connection and zero overflow: any leaked transaction deadlocks immediately, which is a much better test than hoping a bigger pool hides it.
+**Holding a database transaction across a slow call.** An agent runner reads some state, then calls a health endpoint, a tool server, or the model, and the read transaction stays open the whole time. Under load the connection pool empties. The fix sounds trivial — commit or roll back before any network wait — but SQLAlchemy has a trap: rolling back expires loaded objects, so the next attribute access quietly opens a *new* transaction, possibly from a different task. Committing clean reads with `expire_on_commit=False`, and rolling back only when the session is actually dirty, avoids it. To test it, run against a pool of exactly one connection with no overflow. Any leaked transaction then deadlocks immediately, which is a far better test than hoping a bigger pool hides it.
 
-**A deploy racing the capacity controller.** A rollout failed with a "missing container" because the host capacity controller was resizing workers at the same moment. Then a recovery command was started before the failing Compose command had exited, which made the name conflicts worse. Now every component that touches Compose — deploy, redeploy, browser image sync, the resizer — takes the same exclusive `flock`. We also wrote down a rule that felt silly until we needed it: always wait for a command's process to exit before starting the command that's supposed to recover from it.
+**Two things driving Compose at once.** A deploy script and an automatic scaler both run `docker compose`. Sooner or later they race: one removes a container the other expects, and the deploy fails with a "missing container" error. The natural reaction is to run a recovery command straight away — while the failing command is still running — which makes name conflicts worse. The fix is dull: every tool that touches Compose takes the same exclusive `flock`, and you always wait for a command's process to exit before starting the one meant to recover from it.
 
-## What "deterministic" means here
+## What "deterministic" means
 
-It doesn't mean nothing fails. Workers die, providers rate-limit, Docker Desktop does strange things with volumes. It means that for any run we can answer three questions from stored state, not from logs and guesswork: who owned it, which effects were accepted, and which outcomes are still unknown.
+It doesn't mean nothing fails. Workers die, providers rate-limit, Docker does strange things with volumes. It means that for any run you can answer three questions from stored state, not from logs and guesswork: who owned it, which effects were accepted, and which outcomes are still unknown.
 
-If we can't answer the third question, the system says "unknown" to the user instead of picking whichever answer looks better. That one rule has prevented more bad outcomes than any amount of clever retry logic.
+If the system can't answer the third, it should say "unknown" rather than pick whichever answer looks better. I'd trust that rule more than any amount of clever retry logic. The rest of this series — [the sandbox](/blog/ai-code-sandboxes-docker-security-boundary/), [the browser](/blog/browser-agents-identity-infrastructure/), [worker capacity](/blog/autoscaling-ai-workers-queue-age-capacity/) — keeps coming back to it.

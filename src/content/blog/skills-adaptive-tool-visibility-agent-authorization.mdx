@@ -1,6 +1,6 @@
 ---
-title: Hundreds of Tools, One Agent — How Ananta Decides What the Model Sees
-description: How our agent handles 126 native tools plus MCP servers, client connectors, and extensions — a permission filter, nine route profiles, on-demand capability loading, a guard on every call, and an experiment where loading less cost more.
+title: 'Hundreds of Tools, One Agent: Visibility, Routing, and Permission Are Three Problems'
+description: How I'd structure tool exposure for an agent with a very large catalogue — permission filtering before anything else, stable route profiles, on-demand loading as an escape hatch, a guard on every call, and why loading fewer tools can cost more.
 pubDate: '2026-12-08'
 tags:
 - ai-agents
@@ -11,77 +11,101 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/skills-adaptive-tool-visibility-agent-authorization/
-seoTitle: 'Tool Visibility for AI Agents: Routes, Capability Loading, and Permissions'
+seoTitle: 'Tool Visibility for AI Agents: Routes, Loading, and Permissions'
 series: Systems in Practice
 articleId: 11
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
-Ananta's agent has 126 native tools: 29 for building alert workflows, 26 for broker data, 19 for the workspace canvas, 18 for the browser, 8 for the sandbox, and a long tail. On top of those come market-data operations from MCP servers (one exchange MCP server alone exposes 36 tools), connectors built for a specific client's own systems, and calculator extensions. Depending on the deployment, that's well into the hundreds.
+Agent tool catalogues grow faster than anyone plans for. You start with a dozen functions. Then come broker reads, a canvas editor, a browser, a code sandbox, alert builders, a couple of MCP servers with thirty operations each, a client-specific integration, and some calculators someone wrote last week. Suddenly the model has hundreds of options, and every request carries tens of kilobytes of schemas before the user's question appears.
 
-Sending all of them on every call is expensive and confusing for the model. Sending only a few makes the agent helpless at the first unexpected question. Here's how we handle it, and what measuring it taught me.
+There are two obvious responses: send everything, or send a few and let the model ask for more. Neither is right on its own. I find it clearer to treat tool exposure as three separate problems — what exists for this user, what's attached to this request, and what's allowed when a call actually happens — and to keep them in separate code.
 
-## Layer one: permissions decide what exists
+## Permission decides what exists
 
-Before any routing, the tool list is filtered by the user's role. Required permissions come from the tool's name prefix — a deliberately simple scheme you can read in one function:
+Before any routing or relevance logic, filter the catalogue by the user's role. A tool the user can't use should be removed before the model sees it and before any discovery mechanism can find it. If it's searchable but not callable, the model will try to call it, fail, and either apologise or improvise a workaround.
+
+A simple and readable scheme is to derive required permissions from a tool's family:
 
 ```python
-tool_permissions("web_fetch")         # {"chat.use", "research.web"}
-tool_permissions("sandbox_run_python") # {"chat.use", "analysis.sandbox"}
-tool_permissions("broker_get_quotes")  # {"chat.use", "market.view",
-                                       #  "broker.view", "broker.use_data"}
-tool_permissions("subagent_run")       # {"chat.use", "research.deep"}
+FAMILY_PERMISSIONS = {
+    "web":     {"research.web"},
+    "sandbox": {"analysis.code"},
+    "broker":  {"market.view", "account.read"},
+    "alerts":  {"alerts.write"},
+    "delegate": {"research.delegate"},
+}
+
+def required(tool_name: str) -> set[str]:
+    family = tool_name.split("_", 1)[0]
+    return {"chat"} | FAMILY_PERMISSIONS.get(family, set())
 ```
 
-Alert-writing tools need `alerts.manage`. Anything that exports or shares needs `chat.share`. A tool the user can't use is removed before routing and before discovery. The model never sees it and can't search for it. The system prompt also gets a short note about what's restricted, telling the model not to promise, simulate, delegate, or work around those capabilities.
+It's easy to audit, because the whole policy fits on one screen. Its weakness is just as obvious: a new tool has to be named into the right family, or it silently gets the minimum permission. That's a review rule, and it's worth adding a test that fails when a tool's family isn't in the table.
 
-The trade-off is that prefixes make rules easy to read and also easy to forget: a new tool has to be named into the right family, and that's something review has to catch.
+It also helps to tell the model, briefly, what this user can't do, with an instruction not to promise, simulate, or work around those capabilities. Otherwise a model without a publishing tool will cheerfully describe having published something.
 
-## Layer two: a route picks a stable profile
+## A route picks a stable profile
 
-Tool profiles are on by default. Each run is classified into one of nine routes: simple chat, market read, alert workflow, saved workflow, browser read, browser research child, artifact builder, workspace editor, and deep research parent. Each route has a fixed set of tools. On top of that sits a stable core of ten control tools that every parent run gets: `ask_user`, `present_chat_block`, `skill_catalog`, `skill_load`, `session_search`, `session_expand`, the plan tools, and `extension_propose`.
+Most requests fall into a small number of shapes: a simple question, a market read, building an alert, inspecting something saved, browsing, building an artefact, editing a workspace, deep research. Classify each request into one of those routes and attach a fixed set of tools for it, plus a small stable core every parent run gets: asking the user a question, presenting a structured block, listing and loading procedures, searching history, and planning.
 
-Routes add to that rather than replace it: tool hints from a loaded skill, the full catalogue of a market-data MCP server (never a hand-picked subset — partial MCP catalogues confused the model more than they helped), lexically related tools (top six above a similarity floor), and any extensions the user mentioned by name. Every run emits a `tool_profile_selected` event listing exactly what was attached and why.
+Routes should add, not replace. On top of the route's own tools, attach the tools a loaded procedure suggests, lexically related tools above a similarity floor, and anything the user referred to by name. If you include an MCP server's tools, I'd include its whole catalogue rather than a hand-picked subset. Partial catalogues from a server confuse models more than they help, because the operations reference each other.
 
-Routes go wrong in boring ways. "Looks good, turn it on" after building an alert was routed to simple chat with no tools. The agent then searched for and reloaded the same alert tools on every follow-up — about a quarter of all tokens in the alert-authoring chats we traced. Now an active alert-building session keeps its route. Separately, "include their earnings as well" after an answer-only question lost its market tools, because answer-only defaulted to simple chat. The default is now market read.
+Routes go wrong in boring ways, and the fixes are boring too. "Looks good, turn it on" after building an alert sounds like small talk, and a classifier will happily route it to a tool-less simple chat. The agent then spends the next turn rediscovering the tools it just had. Keep an active task's route sticky across short follow-ups. Similarly, "include their earnings as well" after an answer-only question needs market tools. If you have to pick a default for ambiguous follow-ups, pick the one that can do work.
 
-## Layer three: load what's missing, on demand
+Record what was attached and why on every run. When an answer is wrong, "the model never had the right tool" is a common cause and an easy one to check, but only if you logged it.
 
-When a route doesn't have what's needed, the agent has four capability tools: search, load, list groups, and load group. Search returns at most eight results with 220-character summaries. Load takes up to eight exact names and is all-or-nothing.
+## Loading on demand is an escape hatch
+
+When a route doesn't have what's needed, the agent should be able to search the user's permitted inventory and load a few tools. Anthropic describes a version of this as a tool search tool in its [advanced tool use](https://www.anthropic.com/engineering/advanced-tool-use) write-up. The design details that matter:
+
+- Search returns a few results with short summaries, not full schemas.
+- Load takes a small number of exact names and is all-or-nothing.
+- The inventory is fixed for the run and versioned, so a load against a stale version fails clearly.
+- Loaded tools attach on the next model step and are *appended* to the list, never re-sorted (see [the prompt caching post](/blog/prompt-caching-ai-agents-prefix-cache-hit-rate/) for why order matters).
+- Loaded names are saved with the run, so a resumed run gets the same tools back.
 
 ```python
-def capability_load(names: list[str]) -> dict:
+def load_tools(names: list[str]) -> dict:
     if len(names) > 8 or any(n not in run_inventory for n in names):
-        return {"code": "capability_unavailable", "retry": False,
-                "note": "Not in this run's authorized inventory. Do not retry."}
-    attach(names)
-    return {"note": "Available on the next model step. Nothing was executed."}
+        return {"error": "unavailable", "retry": False,
+                "note": "Not in this run's permitted inventory."}
+    attach_next_step(names)
+    return {"note": "Available on the next step. Nothing was executed."}
 ```
 
-The inventory is per run, immutable, already filtered by permissions, and versioned by a hash. A load against a stale version gets `catalog_version_changed`. Loaded tools attach on the *next* model step and are appended to the end of the list, never re-sorted, for reasons covered in [the prompt caching post](/blog/prompt-caching-ai-agents-prefix-cache-hit-rate/). Loaded names are saved in run metadata, so a resumed run gets the same tools back. For self-hosted models with small windows, a schema budget evicts older tools, and if even the requested tools don't fit, the agent is told so.
+Say "nothing was executed" explicitly. Models sometimes believe that loading a tool did the thing.
 
-The tool messages say "loading is discovery, never execution" more than once. Models do sometimes believe that loading a tool did the thing.
+<ArticleDiagram stem="11-skills-adaptive-tool-visibility-agent-authorization" alt="Fig. 1 — Permissions filter the catalogue into a per-run inventory. A route picks a stable profile, and the model can load more from that same inventory. Every call passes a guard that re-checks permissions on the arguments and again on the output." />
 
-<ArticleDiagram stem="11-skills-adaptive-tool-visibility-agent-authorization" alt="Fig. 1 — Permissions filter the full catalogue into a run inventory. A route picks a stable profile, and the model can load more from that same inventory. Every call goes through a guard that re-checks permissions on the arguments and again on the output." />
+## A guard on every call
 
-## The guard on every call
+None of the above grants anything. Visibility is a convenience. Every tool should be wrapped in a guard that re-reads the user's permissions fresh — no long-lived permission cache — before running. If the user's access changed since the tools were attached, the call is refused. The guard checks resource ownership and any information-barrier rules on what's being read, and whether the arguments mention something the user is restricted from.
 
-Visibility doesn't grant anything. Every tool is wrapped, and the wrapper re-reads membership fresh — there's no process-wide permission cache — before running it. If the user's workspace access changed since the tools were attached, the call is refused. It checks file and resource provenance, information-barrier rules on any workflow, session, or run being read, and whether the arguments mention a restricted security.
+Then it checks the *output*. A broad search can return a restricted company without anyone having named it. If a desk is walled off from a security, the result should be refused before the model sees it.
 
-Then it checks the *output* too. A broad search can return a restricted company without anyone having named it. If a desk is walled off from a security, the result is refused before the model sees it. No skill and no capability load grants access to anything. They only decide what's convenient to reach.
+```python
+async def guarded(call):
+    if (refusal := policy.check_args(call)):
+        return refusal
+    result = await call.run()
+    return policy.check_output(call, result) or result
+```
 
-## Skills are procedures, versioned and reviewed
+Procedures and tool loading only decide what's convenient to reach. Neither should ever widen access.
 
-There are 23 shipped skills: markdown files with a name, a "use when / don't use when" description, a version, tool hints, keyword triggers, and optionally a spawn block for delegation. The skill catalogue in the prompt is capped at 2,000 characters, a loaded skill body at 12,000, and at most four skills auto-load from triggers. Skill bodies go at the end of the model input, after the conversation, to keep the cached prefix stable.
+## Procedures are versioned text, so review them
 
-Skills can be improved, carefully. In our October evaluation the model activated a skill override when the user had only asked for a draft. Proposals now stay inactive until a person activates them. Later we added an opt-in where the owner can let independently reviewed revisions apply automatically — but only to allowlisted methodology skills, and never to tool hints, triggers, or delegation settings. The approval is bound to a fingerprint of the revision and hashes of the paired test outputs. Edit the revision and the approval is gone.
+Reusable procedures — "skills", in some frameworks — are markdown with a description of when to use them and when not to, a version, suggested tools, and trigger phrases. Keep the catalogue of names and descriptions small in the prompt, cap each loaded body, and limit how many load automatically. Append loaded bodies at the end of the model input, after the conversation, so they don't disturb the cached prefix.
 
-## The experiment where loading less cost more
+Treat changes to them like code. A model asked to draft an improvement should produce an inactive proposal, never an active change. If you allow some revisions to apply automatically, restrict that to methodology text — never tool suggestions, triggers, or delegation settings — and bind the approval to a fingerprint of the exact revision and its test outputs, so editing it afterwards voids the approval.
 
-The obvious next step was to make deferred loading the default: attach a small core and let the agent load the rest. We tested it properly, on frozen inputs, with the same conversation replayed against two strategies.
+## When loading less costs more
 
-Deferred loading cut serialised schema bytes by 28%, from about 217 KB to 157 KB. But the full strategy used 73,598 input tokens across 2 calls in 49 seconds. Deferred used 74,415 tokens across 4 calls in 61 seconds. The extra round trips to discover and load tools cost more than the smaller schemas saved — and in an earlier run, selective loading had halved our cache coverage before we fixed the tool ordering.
+The natural next step is to make deferred loading the default: attach a small core and let the agent load the rest. It's worth measuring before you do.
 
-So nothing was promoted. Production attaches the full tool set for the selected route, in a stable order, and capability loading is the escape hatch rather than the main path. Route profiles do most of the work. We also tried embedding-based tool retrieval and removed it: worker processes start fresh, so loading the embedding model on each worker's first tool call cost more memory and startup time than the retrieval was worth. Related-tool matching is lexical now.
+Deferred loading definitely shrinks the schema bytes per request. But each discovery and load is another model round trip, and each round trip resends the whole prefix. In a paired comparison on identical frozen inputs, you can easily see the deferred strategy use fewer schema bytes per call and *more* total input per task, plus more latency, because it needed extra calls to find what a full route profile would have attached up front. If tool loading also disturbs the cached prefix, it gets worse again.
 
-The lesson I keep coming back to: the number to optimise is input per *completed task*, not bytes per request. The two moved in opposite directions.
+My conclusion: attach a full, stable profile for the route, and keep on-demand loading as the escape hatch, not the main path. Embedding-based tool retrieval has a similar catch. If your workers are fresh processes, loading an embedding model on the first tool call of each one can cost more memory and startup time than the retrieval saves. Lexical matching over good tool descriptions gets you most of the way.
+
+The number to optimise is input per completed task, not bytes per request. They often move in opposite directions.

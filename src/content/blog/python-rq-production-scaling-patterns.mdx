@@ -1,6 +1,6 @@
 ---
-title: Python RQ Behind an Agent Platform — What We Kept Simple and What We Didn't
-description: How Ananta runs long agent turns on RQ — SimpleWorker processes with two heartbeats, SQL as the source of truth, a reconciler instead of RQ retries, build-pinned queues, and a cron that admits it doesn't do exactly-once.
+title: Python RQ for Long-Running Work — Keep the Queue Dumb, Put the Guarantees in SQL
+description: RQ promises very little, which is exactly why it works for long agent runs. Put intent in the database, reconcile instead of retrying, keep child work from starving parents, and be honest that cron isn't exactly-once.
 pubDate: '2026-10-27'
 tags:
 - python
@@ -11,94 +11,116 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/python-rq-production-scaling-patterns/
-seoTitle: 'Python RQ in Production: Heartbeats, Reconcilers, and Pinned Queues'
+seoTitle: 'Python RQ in Production: Durable Intent, Reconcilers, and Fair Queues'
 series: Systems in Practice
 articleId: 5
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
-People are sometimes surprised that Ananta's agent runs go through RQ. No Celery, no Temporal, no managed queue. Just Redis lists and Python workers.
+RQ is easy to underestimate. It's Redis lists, a job hash, and a worker loop. There's no workflow engine, no durable timers, no exactly-once anything. For a lot of teams that reads as "fine for sending emails, not for real work".
 
-The reason is the deployment model. Each client runs the whole stack on their own server, often looked after by someone who isn't a distributed-systems person. RQ is something I can explain in one diagram, and Redis is already in the stack. The trade is that RQ gives you very few guarantees, so the guarantees we need live in our code and in SQL.
+I think it's the other way round for one class of system: self-hosted software that a small team has to operate, where Redis is already in the stack and the person on call might not be a distributed-systems specialist. A queue you can explain on a whiteboard in two minutes is a real operational advantage. The catch is that RQ gives you very few guarantees, so the ones you need have to live somewhere else. In my experience the right place is your SQL database.
 
-Here's what that looks like after a few months of production traffic and one fairly expensive evaluation.
+This post is about long-running jobs — agent runs that take minutes, call paid APIs, and sometimes have side effects — and the patterns I'd use to run them on RQ without lying to anyone about what happened.
 
-## The job is just a pointer
+## The job should be a pointer
 
-An RQ job in Ananta carries one thing: a `run_id`. The function path is fixed, the job id is deterministic (`broker-chat-<db fingerprint>-<run_id>`), and everything the run needs — the user's message, the model, the session, the tool policy — is in SQL.
-
-Before anything touches Redis, the API writes a `RunDispatchRecord` row saying which queue (we call it a lane) admitted the run. The SQL session is closed before any Redis I/O, so a slow Redis can't hold a database transaction open.
-
-That ordering is the whole point. During one test we stopped Redis, submitted a run, and the API admitted it in under half a second. When Redis came back, the run dispatched about four seconds later, with exactly one model call recorded. The intent lived in SQL, so there was nothing to lose.
-
-## We don't use RQ's retries
-
-There's no `Retry(...)` on our jobs and no RQ timeout either — `job_timeout` maps to `-1`. That looks reckless until you see what replaces them.
-
-Retries of model calls are owned by the agent harness, which knows the difference between a rate limit and a quota error and a malformed tool call. The harness also enforces its own absolute deadline, which never slides forward when a job is extended. RQ's death penalty, by contrast, kills a job with no idea whether a model call was mid-flight.
-
-Re-dispatch is a reconciler:
+Keep the job payload tiny. Ideally it's one id:
 
 ```python
-def ensure_queued(run_id):
-    job = fetch_job(job_id_for(run_id))
+queue.enqueue(
+    "runs.execute",
+    run_id,
+    job_id=f"run-{run_id}",   # deterministic
+    result_ttl=86_400,
+    failure_ttl=86_400,
+)
+```
+
+Everything the job needs — the user's request, the configuration, the permissions it runs under — lives in a database row. Two things follow from that. You never have to worry about pickling an object graph or about a stale snapshot of the user's settings riding along in Redis. And the database becomes the place where you can answer "what was this run supposed to do?" without trusting Redis to still have it.
+
+Order matters here. Write the intent first, commit, close the session, *then* enqueue:
+
+```python
+with session_scope() as db:
+    run = Run(id=run_id, status="admitted", lane=lane_for(request))
+    db.add(run)
+# transaction committed and connection returned before any Redis I/O
+queue_for(run.lane).enqueue("runs.execute", run_id, job_id=f"run-{run_id}")
+```
+
+If Redis is down at that moment, the run is still admitted. Something can enqueue it later. If you do it the other way round — enqueue, then write the row — you can end up with a job pointing at a run that doesn't exist. And if you hold a database transaction open while talking to Redis, a slow Redis turns into a slow database.
+
+## Reconcile instead of retrying
+
+I'd leave RQ's `Retry` off for this kind of job, and probably its timeout too.
+
+RQ's retry knows the job failed. It doesn't know *why*, and for agent runs the why decides everything. A provider rate limit wants a short backoff. A quota error wants no retry at all and a clear message. A malformed tool call wants a corrected prompt, not a replay. That logic belongs in the code that makes the model calls, which can classify failures properly.
+
+Timeouts are similar. RQ's death penalty kills the job wherever it is, including halfway through a paid call or a write. I'd rather enforce an absolute deadline inside the run, at points where stopping is safe, and make sure that deadline never slides forward when someone extends a job.
+
+What replaces RQ's retry is a reconciler: a loop that compares what the database says should be running with what Redis actually has.
+
+```python
+def ensure_queued(run_id: str) -> None:
+    job = Job.fetch_or_none(f"run-{run_id}")
     if job is None:
-        return enqueue(run_id)
-    if job.status in {"failed", "finished", "stopped"}:
+        enqueue(run_id)
+    elif job.get_status() in {"failed", "finished", "stopped"}:
         job.delete()
-        return enqueue(run_id)
-    if job.status == "queued" and redis.lpos(queue.key, job.id) is None:
-        queue.enqueue_job(job)   # metadata says queued, list says otherwise
+        enqueue(run_id)
+    elif job.get_status() == "queued" and redis.lpos(queue.key, job.id) is None:
+        queue.enqueue_job(job)   # the hash says queued, the list disagrees
 ```
 
-That last branch caught a real case: RQ's job hash said "queued", but the job id wasn't in the list any more. Because the job id is deterministic, running the reconciler twice is harmless.
+That last branch handles a case that sounds impossible until you see it: the job hash says `queued`, but the id isn't in the list any more — a crash between two Redis operations, or a manual cleanup that removed one and not the other. Because the job id is deterministic, running the reconciler twice does no harm.
 
-Each run also carries an `attempt_id`, the id of the owning worker, and a run epoch. A worker that lost its lease can't write results for an attempt that has moved on.
+Add fencing to the run itself. Give each attempt an id and an epoch, and have the worker claim the run with a compare-and-swap in SQL. A worker that lost its claim can still be running — paused by GC, stuck on a slow network call — and it must not be able to write a result for an attempt that has moved on.
 
-## SimpleWorker, in its own process, with two heartbeats
+## SimpleWorker, one process per worker
 
-We run RQ's `SimpleWorker` — no fork per job — but each worker is its own child process spawned by a pool parent. Forked workers inherit database connection pools, which is a well-known way to get two processes talking over one Postgres socket. With `SimpleWorker` in a fresh process, a worker owns its pools for its whole life.
+RQ's default `Worker` forks a child per job. For short jobs that's a nice isolation story. For long jobs with heavy imports, it's expensive, and forking after you've opened database pools is a well-known way to get two processes sharing one connection.
 
-Each worker runs two independent daemon threads that beat every five seconds: one for worker readiness and one for the current job's execution. The job heartbeat is stopped *before* RQ removes the execution metadata — the other order would briefly bring a finished job back to life.
+The arrangement I like is `SimpleWorker` (no fork per job) inside processes you spawn yourself, from a small parent that decides how many to run. Each process owns its pools for its entire life. Have each one import its heavy dependencies — model SDKs, tool registries — *before* it registers with RQ. A worker that's registered should be ready to work, not about to spend five seconds importing.
 
-Children import the model SDK and the full tool registry *before* registering with RQ. A warm worker shouldn't make the user's first chat pay a multi-second cold start.
+Two heartbeats are worth separating: one that says "this worker is alive and listening", and one that says "this job is still making progress". A worker can be alive with a wedged job, and the two signals lead to different actions.
 
-## Children must not borrow parent capacity
+## Don't let children starve their parents
 
-An agent can delegate to child runs. Parents go on one queue, children on another, workflow-editor turns on a third. For a while we allowed work stealing between them, because idle capacity is wasteful.
+If runs can delegate — a parent run that enqueues child runs and waits for them — you have a deadlock waiting for load.
 
-Our October evaluation found the problem. A parent waits for its children while holding its worker. Child workers, allowed to steal, picked up more parents. Once the pool was saturated, every slot held a parent waiting for a child that had no worker to run on. The fix was one parameter: child workers always listen only on the child queue. Work stealing still exists, off by default, and it never lends child slots.
+Here's how it happens. Parents and children have separate queues, which is sensible. Then someone enables work stealing so idle workers can help with other queues, also sensible. Under load, child workers pick up parent jobs. Those parents enqueue children and wait, holding their worker. Eventually every worker holds a parent waiting on a child, and no worker is free to run a child.
 
-Fairness is a small piece of code too. Pending jobs are reordered round-robin by user under `WATCH`, so one person submitting thirty runs doesn't stall everyone else. If anything changes the list during the reorder, the transaction aborts and we try again later rather than overwrite a job someone else just accepted.
+The fix is a one-line rule: workers that serve the child queue only ever serve the child queue. Steal in other directions if you want, but never lend child capacity to parents.
 
-<ArticleDiagram stem="05-python-rq-production-scaling-patterns" alt="Fig. 1 — SQL records the admitted lane before Redis sees anything. Workers are fenced by attempt and epoch, and a reconciler re-enqueues or re-pins runs instead of RQ retrying them." />
+Fairness is the other queue-level problem. RQ is FIFO, so one user submitting thirty runs puts everyone else behind them. You can reorder pending jobs round-robin by user inside a `WATCH`/`MULTI` transaction: read the list, compute the new order, and write it back only if nobody touched the list in between. If the transaction aborts, try again on the next pass. Never overwrite a job someone else just accepted.
 
-## Queues pinned to a build
+<ArticleDiagram stem="05-python-rq-production-scaling-patterns" alt="Fig. 1 — Intent is committed to SQL before Redis sees the job. Workers claim runs with a fenced compare-and-swap, and a reconciler re-enqueues anything the database expects but Redis has lost." />
 
-This is the newest part and it came from a deploy-time bug. With execution generations turned on, each lane name carries a hash of the runtime source:
+## Pin work to the code that accepted it
 
-```text
-broker-chat:<db fingerprint>:runtime-<source sha256>
+One more subtle problem shows up during deploys. A run is admitted under version N of your code. Halfway through a rolling deploy, a version N+1 worker picks it up and reads its stored state with slightly different assumptions.
+
+You can avoid that by putting a build identifier in the queue name, so version N's runs are only consumed by version N's workers. It works, but it creates a new failure: a run admitted just before a deploy, on a queue that no worker serves any more, waiting forever. And if turns within a conversation run in order, it blocks everything behind it too.
+
+So the reconciler needs one more job. For runs that *never started*, if no worker with a recent heartbeat is listening on their queue, move them to the current build's queue and stamp them with the current build. Never move a run that has started. That one should stop and wait for a person to decide.
+
+## Cron isn't exactly-once, and it should say so
+
+For scheduled work I'd skip `rq-scheduler` and use the database. A short Redis lease can decide which process bothers to look for due work, but the database decides who owns a row:
+
+```sql
+UPDATE schedules
+   SET next_fire_at = :next, owner = :me, lease_until = :lease
+ WHERE id = :id AND next_fire_at = :due AND owner IS NOT DISTINCT FROM :prev_owner;
 ```
 
-A run admitted by build N runs on build N. We never want a half-deployed system where a new worker picks up a run admitted under old code and interprets its stored state differently.
+Advance the schedule and insert an occurrence row in the same commit. Then move the occurrence through states: claimed, dispatching, then ok, error, or skipped. If one sits in `dispatching` longer than it plausibly could, mark it `unknown`. Don't replay it. You don't know whether the side effect happened, and replaying something like "send the alert" twice is often worse than a visible gap.
 
-Then, in late October, a chat turn admitted just before a deploy waited forty minutes on a lane that no worker served any more — the old build was gone. It also blocked that session's next message, since turns within a session run in order.
+Write that limit down in the code: this isn't exactly-once delivery. Then if someone edits a schedule after an occurrence was claimed, skip the stale occurrence instead of running yesterday's claim with today's configuration.
 
-The fix re-pins queued runs that *never started* when no worker with a heartbeat from the last three minutes is listening on their lane, and the reconciler now runs every two minutes rather than only at startup. Two follow-ups landed the same day: runs reset after an expired attempt are covered too, and moved runs get the current build manifest stamped on them, otherwise the new worker rejects them as a build mismatch. A run that has *started* is never moved. That one fails closed for an operator to look at.
+## When to stop using RQ
 
-## Cron isn't RQ either
+None of this is RQ's fault, and it isn't really a criticism of RQ. It does what it promises, which isn't much. Every pattern above is about writing your real assumptions into SQL where you can check them.
 
-Scheduled workflows don't use `rq-scheduler`. They use a compare-and-swap in SQL plus a Redis leader lease. The lease (45 seconds, renewed every 15) only decides which process bothers to look. The database decides who owns a due row: the claim `UPDATE` matches the full tuple of id, next fire time, cron expression, timezone, misfire policy, owner, and lease.
-
-Advancing the schedule and inserting an occurrence row happen in one commit. The occurrence then moves through `claimed → dispatching → ok | error | skipped`. A row stuck in `dispatching` for more than five minutes becomes `unknown`, with a note that side effects are uncertain and weren't replayed. The docstring says outright that this isn't exactly-once external delivery. I'd rather have that sentence in the code than a guarantee we can't keep.
-
-If someone edits or pauses a workflow after an occurrence was claimed, the old occurrence is marked skipped, so yesterday's claim isn't run with today's configuration.
-
-## Where it hurt
-
-A burst test of 250 runs from 50 users on 16 slots: all 250 admitted in 8.6 seconds, then 490 seconds to drain, with a p95 wait of 423 seconds. Our gate was 120 seconds, so it failed, and we wrote it down as failed. (The first attempt only admitted 249 of 250, because the test lab used a five-second database pool timeout instead of twenty.)
-
-A maintenance queue for market-data repair grew past 37,000 pending jobs. Ordinary refreshes sat behind it and the upstream provider started returning 429s. We split refresh and repair into separate queues, coalesced repair ranges per scope, and added a shared cooldown after a 429.
-
-None of these were RQ's fault. RQ did exactly what it promises, which isn't much. The bugs were in what we assumed on top of it, and the fixes were all about writing those assumptions into SQL where we could check them.
+There's a point where that becomes a workflow engine in disguise. If you need durable timers measured in days, sagas with compensation steps, or many-step workflows that resume halfway through, use something built for that. But for "run this long job once, tell me honestly if you couldn't", RQ plus a database and a reconciler is plenty, and it's much easier to debug at 2 a.m. The [RQ docs on workers](https://python-rq.org/docs/workers/) are short enough to read in full, which is part of the appeal.

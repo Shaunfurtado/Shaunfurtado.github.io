@@ -1,16 +1,16 @@
 digraph subagents {
 rankdir=TB;
 parent [label="parent run\ngeneration 0", class="key"];
-spawn [label="subagent_run\nskill spawn spec\nresearch.deep"];
-row [label="agent_subruns row\nlease · idempotency key"];
+spawn [label="spawn request\nprocedure allows it"];
+row [label="child record\nlease · idempotency key"];
 q [label="child queue\nreserved workers"];
-child [label="child · generation 1\nenvelope, no transcript\ntools − parent-only"];
-check [label="acceptance check\nschema + valid evidence"];
+child [label="child · generation 1\ntask envelope only\ntools minus parent-only"];
+check [label="acceptance check\nschema + evidence"];
 parent -> spawn;
 spawn -> row;
 row -> q;
 q -> child;
 child -> check [label="result"];
-check -> parent [label="digest"];
+check -> parent [label="projection"];
 parent -> row [label="cancel cascades", style=dashed];
 }

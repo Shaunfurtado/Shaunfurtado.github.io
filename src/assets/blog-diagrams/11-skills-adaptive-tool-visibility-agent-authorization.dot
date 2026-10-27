@@ -1,14 +1,14 @@
 digraph tools {
 rankdir=TB;
-all [label="all tools\n126 native + MCP\nconnectors · extensions", class="ghost"];
-rbac [label="permission filter\nfresh, per run"];
-inv [label="run inventory\nversioned hash", class="key"];
-route [label="route profile\n9 routes + 10 core tools"];
+all [label="full catalogue\nnative · MCP · plugins", class="ghost"];
+perm [label="permission filter\nfresh, per run"];
+inv [label="run inventory\nversioned", class="key"];
+route [label="route profile\n+ stable core tools"];
 model [label="model"];
-guard [label="guard\nargs check → run → output check"];
+guard [label="guard\ncheck args → run\n→ check output"];
 tool [label="tool"];
-all -> rbac -> inv -> route -> model;
-model -> inv [label="capability_load (≤8)", style=dashed];
+all -> perm -> inv -> route -> model;
+model -> inv [label="load on demand", style=dashed];
 model -> guard [label="call"];
 guard -> tool;
 }

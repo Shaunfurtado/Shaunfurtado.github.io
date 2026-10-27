@@ -1,6 +1,6 @@
 ---
 title: Scaling Agent Workers on One Machine, Memory First
-description: How a self-hosted agent platform sizes its worker pools — ready capacity versus process count, cgroup-aware limits, warm drains, a deadlock between parent and child runs, and a capacity bug that double-counted memory.
+description: Sizing worker pools when there's no next node — ready capacity versus process count, cgroup-aware limits, warm drains, a parent/child deadlock that's easy to build, and an admission bug that double-counts memory.
 pubDate: '2026-12-15'
 tags:
 - infrastructure
@@ -11,23 +11,25 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/autoscaling-ai-workers-queue-age-capacity/
-seoTitle: 'Scaling AI Agent Workers: Ready Capacity, Memory, and Drains'
+seoTitle: 'Scaling AI Agent Workers on a Single Machine: Readiness, Memory, and Drains'
 series: Systems in Practice
 articleId: 4
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
-Most autoscaling advice assumes a cluster: add nodes, let an HPA watch a metric, done. Ananta runs on one client's machine. There is no next node. Every worker we add competes for the same RAM as the browser sessions, the code sandbox, Postgres, and the client's own processes.
+Most autoscaling advice assumes a cluster: add nodes, point a horizontal autoscaler at a metric, done. A self-hosted agent platform often runs on one machine instead — the customer's server. There is no next node. Every worker you add competes for the same RAM as browser sessions, the code sandbox, the database, and whatever else the customer runs.
 
-So our scaling problem isn't really "how many replicas". It's "how much work can this box take right now without hurting something else", answered every second, by code that has to be right when the numbers it reads are wrong.
+So the real question isn't "how many replicas?". It's "how much work can this box take right now without hurting something else?" — answered every second, by code that has to behave sensibly when the numbers it reads are wrong.
 
-When I first wrote about this, I described scaling on queue age. That's not what we ended up doing, and the reason is worth explaining.
+I used to think queue age was the signal to scale on. On a single machine I no longer do, and the reasons are most of this post.
 
 ## Running processes aren't ready capacity
 
-Agent runs execute on RQ workers. A parent process in each worker container spawns children — each one a separate `python -m` process, not a fork after import — and each child runs one worker.
+Assume agent runs execute on RQ workers. A parent process in each worker container spawns children, each a fresh `python -m` process rather than a fork after imports, and each child runs one `SimpleWorker`.
 
-The first version scaled on queue depth versus process count. It over-counted constantly. A process that's spawned but still importing the model SDK and tool registry (a few seconds, and a lot of memory) isn't capacity. Neither is a process that's alive but wedged. So the pool asks RQ which workers are registered and idle, matching on hostname *and* pid — pid alone collides between containers — and counts three groups: ready and idle, busy, and starting.
+The naive scaler compares queue depth with the number of child processes. It over-counts constantly. A process that's spawned but still importing the model SDK and tool definitions — several seconds and a lot of memory — isn't capacity. Neither is one that's alive but wedged.
+
+A better scaler asks RQ which workers are registered and idle, matching on hostname *and* PID (PIDs collide across containers), and counts three groups: ready and idle, busy, and starting.
 
 ```python
 pending = depth - ready_idle - starting
@@ -35,48 +37,48 @@ target = max(floor, active + pending)
 target = min(target, cpu_cap, active + memory_slots)
 ```
 
-Children preload the heavy imports *before* they register with RQ, so "ready" really means a chat won't pay the cold start. The parent wakes on a Redis `BLPOP` hint when work arrives, waiting at most a second, and spawns at most five processes per tick, because imports allocate memory before the cgroup sample shows it.
+Have children do their heavy imports *before* registering with RQ, so that "ready" really means a run won't pay the cold start. Wake the parent with a blocking pop on a small Redis list when work arrives, rather than polling, and limit how many processes it spawns per tick. Imports allocate memory before your next memory sample shows it.
 
-## Limits come from the cgroup, not the host
+## Read limits from the cgroup, not the host
 
-Inside a container, `os.cpu_count()` tells you about the host, which is the wrong question. The CPU cap reads `cpu.max` and multiplies by an oversubscription factor (agent runs spend most of their time waiting on the model, so a core can carry several). Memory slots come from `memory.max − memory.current − reserve`, divided by about 384 MiB per worker.
+Inside a container, `os.cpu_count()` tells you about the host, which is the wrong answer. A CPU cap should come from the cgroup's `cpu.max`, multiplied by an oversubscription factor. Agent runs spend most of their time waiting on the model, so one core can carry several of them. Memory slots should come from `memory.max − memory.current − reserve`, divided by a measured per-worker footprint.
 
-One rule in that code matters more than the formulas: if queue telemetry fails, the answer is *unknown*, not *empty*. A Redis timeout used to look like a quiet queue, the idle timer would start, and five minutes later we'd scale down in the middle of a busy period. Now an unreadable queue holds current capacity and doesn't start the idle clock.
+The rule I'd care most about: if queue telemetry fails, the answer is *unknown*, not *empty*. A Redis timeout that reads as a quiet queue starts the idle timer, and a few minutes later you scale down in the middle of a busy period. When you can't read the queue, hold current capacity and don't start the idle clock.
 
-## Scaling down is a drain, never a kill
+## Scale down by draining, never by killing
 
-Scale-down sends one SIGTERM. In RQ that means "finish the current job, then exit". We never send a second signal. An agent run can take several minutes, and killing it halfway turns a capacity decision into a user-visible failure with uncertain side effects. (On Windows, SIGTERM is a kill, so in development there's no drain at all — which once had me debugging "lost" runs that were really just my laptop.)
+Scale-down should send one SIGTERM. In RQ that means "finish the current job, then exit". Never send a second signal. An agent run can take minutes, and killing it halfway turns a capacity decision into a user-visible failure with uncertain side effects. (On Windows, SIGTERM is effectively a kill, so there's no graceful drain in a Windows dev environment. It's worth knowing that before you debug "lost" runs on a laptop.)
 
-There's also a drain file. Touching `/tmp/ananta-execution-drain` sets the target to zero, which is how deploys empty a container politely.
+A drain file is a handy escape hatch: if it exists, the target is zero, which gives deploys a polite way to empty a container.
 
-## The host controller
+## Somebody has to manage the containers
 
-Above the in-container pools there's a small host-level controller, running as a user systemd service, that decides how many worker *containers* exist. It's allowed to scale exactly three services and nothing else.
+Above the in-container pools you need something that decides how many worker *containers* exist. On one machine, a small host-level controller running as a systemd service is enough, provided it's allowed to touch only a short, explicit list of services.
 
-Each tick it reads demand — only workers with a heartbeat in the last 15 seconds count — and computes slots from the host's available memory, after leaving room for the full sandbox and browser reservations plus 20% headroom. Slots are shared out by weighted fair rounds, with reservations for chat, workflow, and subagent work, and busy work is never taken away because an estimate dropped. A lower target has to hold for five minutes before it applies.
+Each tick it reads demand — counting only workers with a recent heartbeat — and computes slots from the host's available memory, after leaving room for the full sandbox and browser reservations plus headroom. Share slots across worker roles by weighted fair rounds, never take busy work away because an estimate dropped, and require a lower target to hold for several minutes before applying it.
 
-Removing a container is careful in a way Compose can't be. Compose won't let you choose *which* replica goes, so the controller checks through `docker exec` that a replica's workers aren't busy, touches its drain file, waits for them to deregister and for any preloading children to finish, and only then stops it with a 90-second grace. Before any of that, it refuses to act if the image isn't pinned by digest or if a release is half-applied, and it holds the same deploy lock as everything else that touches Compose.
+Removing a container has to be more careful than Compose allows on its own. `docker compose up --scale` won't let you choose *which* replica goes. So check that the replica's workers aren't busy, touch its drain file, wait for its workers to deregister and for any preloading children to finish, and only then stop it with a generous grace period. Refuse to act at all if the image isn't pinned by digest or a release is half-applied, and take the same lock as anything else that runs Compose.
 
-<ArticleDiagram stem="04-autoscaling-ai-workers-queue-age-capacity" alt="Fig. 1 — Pools scale processes on verified readiness inside cgroup limits. The host controller scales containers under the deploy lock. The browser and sandbox brokers each run their own memory admission against the same host." />
+<ArticleDiagram stem="04-autoscaling-ai-workers-queue-age-capacity" alt="Fig. 1 — Pools scale processes on verified readiness inside cgroup limits. A host controller scales containers under a shared deploy lock. The browser and sandbox services do their own memory admission against the same host." />
 
-## The deadlock
+## A deadlock you can build in an afternoon
 
-In October we ran a paid evaluation: 15 real sessions, 45 parent runs. One scenario had an agent delegate to child runs that timed out immediately. It exposed a deadlock we'd built ourselves.
+Say your agent can delegate to child runs, and parents and children use separate queues. Idle capacity is wasteful, so you let idle workers steal jobs from other queues.
 
-We had work stealing — idle workers could pick up jobs from other queues. Child workers would pick up *parent* jobs. Those parents would then delegate, and wait for children. But the child slots were full of parents. Under saturation, every slot was a parent waiting on a child that had nowhere to run.
+Now saturate it. A parent waits for its children while holding its worker. Child workers, allowed to steal, pick up more parents, which delegate and wait too. Eventually every slot holds a parent waiting for a child that has nowhere to run.
 
-The fix was one rule: child workers never lend their slots to parents. Work stealing is still available, off by default, and child capacity is always reserved for children.
+The fix is a single rule: child workers serve only the child queue. Keep work stealing if you like, off by default, but never let it lend child capacity to parents. I'd put a load test for this in CI before anyone writes the stealing code.
 
-## The bug that rejected browsers we had room for
+## An admission bug that rejects work you have room for
 
-Browser sessions have their own admission, in the browser broker, because each one is a 2 GiB container. The ceiling is the minimum of three numbers: a configured maximum of 32, a share of total host memory, and available memory plus what current sessions are actually using.
+Browser sessions are expensive — a gigabyte or two per container — so the browser service should do its own admission. A reasonable ceiling is the minimum of three numbers: a configured maximum, a share of total host memory, and available memory plus what current sessions are actually using.
 
-For a while, that third number was wrong. Admission took `MemAvailable` — which already excludes what the running sessions use — and then charged each of them their full 2 GiB limit again. Every resident browser was counted twice, and users got "no capacity" with gigabytes free.
+That third number is easy to get wrong. `MemAvailable` already excludes what running sessions use. If you then charge each session its full memory limit again, every resident session is counted twice, and users see "no capacity" with gigabytes free.
 
-The fix credits back only measured anonymous memory from each session's cgroup (never file cache, which the kernel can reclaim), capped per session, and only for this deployment's containers. With eight sessions using 4 GiB in total and 19 GiB available, the ceiling went from 8 to 10. The sampler gets a 1.5-second budget and 0.2-second Docker socket timeouts. If anything fails, it credits nothing — falling back to the conservative answer, not the optimistic one.
+The fix is to credit back only *measured* anonymous memory from each session's cgroup — never file cache, which the kernel can reclaim — capped per session, and only for containers your deployment owns. Give the sampler a short time budget and short Docker socket timeouts. If anything fails, credit nothing: fall back to the conservative answer, not the optimistic one.
 
-## About queue age
+## Where queue age fits
 
-Queue age is in our health endpoints — every queue reports its oldest waiting job — and it's the first thing I look at when someone says "the agent is slow". But it doesn't drive scaling, and I've stopped thinking it should on a single machine. Queue age tells you you're *late*. What decides whether you can do anything about it is memory, and memory is a hard ceiling, not a dial.
+Queue age is still worth exposing. Every queue should report its oldest waiting job in its health endpoint, and it's the first thing I'd look at when someone says "the agent is slow". But on one machine it can't drive scaling. Queue age tells you you're *late*. Whether you can do anything about it depends on memory, and memory is a hard ceiling, not a dial.
 
-We're honest about the limits, too. Our pilot ran 12 jobs on 4 workers with about 22 ms p95 to acquire a warm worker and a third of a second to drain. A burst of 250 runs on 16 slots was all admitted in under nine seconds, but took about 490 seconds to clear, against a 120-second target. That's a failed gate, and it's written down as one. The target of a hundred concurrent runs, 25 sandboxes, and 10 browsers on one box is explicitly marked as not yet qualified. Writing that down has been more useful than any dashboard.
+The other habit I'd keep is writing down the gates you *haven't* passed. Something like "a burst of a few hundred runs drains in under two minutes" or "N concurrent runs plus M sandboxes plus K browsers on this box" should be a test with a pass or fail, and a failure should be recorded as a failure. That list has been more useful to me than any dashboard, and it's the same honesty the [deterministic infrastructure](/blog/architecting-deterministic-infrastructure/) post argues for, applied to capacity.

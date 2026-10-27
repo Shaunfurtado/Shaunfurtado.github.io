@@ -1,21 +1,21 @@
 digraph redis {
 rankdir=TB;
-feed [label="broker feeds\n+ pollers"];
-cache [label="redis-cache\nLFU · no persistence\ninstrument search", class="ghost"];
+feed [label="price feeds\n+ pollers"];
+cache [label="cache instance\nallkeys-lfu · no AOF", class="ghost"];
 subgraph cluster_durable {
-  label="redis · noeviction · AOF";
-  quote [label="quote key (30s)\nmonotonic Lua write"];
-  ticks [label="live:ticks stream\nMAXLEN ~2000"];
+  label="durable instance · noeviction · AOF";
+  price [label="latest price\nmonotonic Lua write"];
+  stream [label="tick stream\nMAXLEN ~N"];
   dirty [label="dirty set\nwrite-behind"];
 }
-evalr [label="alert evaluator\nsingle owner lease\nfenced checkpoint"];
+cons [label="single consumer\nlease + fenced checkpoint"];
 flush [label="flusher\nbyte-compare ack"];
-sql [label="SQL\nsnapshots · alerts", class="key"];
-feed -> quote;
-feed -> ticks;
-quote -> dirty [style=dashed];
-ticks -> evalr [label="XREAD"];
+sql [label="SQL\nsource of truth", class="key"];
+feed -> price;
+feed -> stream;
+price -> dirty [style=dashed];
+stream -> cons [label="XREAD"];
 dirty -> flush;
 flush -> sql;
-evalr -> sql;
+cons -> sql;
 }

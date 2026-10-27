@@ -1,6 +1,6 @@
 ---
-title: What Our AI Code Sandbox Actually Looks Like
-description: The runtime chain, the hardening flags, the memory maths, and the bugs — including a write that returned 200 and then 404 — behind the Python sandbox in a self-hosted agent platform.
+title: Designing a Code Sandbox for an AI Agent on a Machine You Don't Control
+description: A runtime fallback chain from microVMs to gVisor, the container flags that matter, memory-first admission, a network design with no exceptions, and the bugs hiding in workspace snapshots.
 pubDate: '2026-11-03'
 tags:
 - ai-agents
@@ -11,46 +11,46 @@ tags:
 author: Shaun Furtado
 draft: false
 canonicalURL: https://shaunfurtado.is-a.dev/blog/ai-code-sandboxes-docker-security-boundary/
-seoTitle: 'AI Code Sandbox Design: MicroVMs, gVisor, and Real Failure Modes'
+seoTitle: 'AI Code Sandbox Design: MicroVMs, gVisor, and Failure Modes'
 series: Systems in Practice
 articleId: 2
 ---
 import ArticleDiagram from '/src/components/ArticleDiagram.astro';
 
-The agent in Ananta can write and run Python. Analysts use it all the time: reshape a holdings export, compute rolling returns, plot a sector breakdown, turn a CSV the browser agent downloaded into a clean table. It's one of the most useful tools we ship, and it's the one I worry about most, because it runs code a language model wrote on a server that also holds a client's broker credentials.
+Letting an agent write and run Python is one of the most useful things you can give it. An analyst can ask it to reshape a spreadsheet export, compute rolling returns, chart a breakdown, or clean up a CSV that came out of some web portal. It's also the tool I'd worry about most, because it runs code a language model wrote — on a server that probably holds credentials for other systems.
 
-This is how the sandbox is built today, and the things that went wrong on the way there.
+This post is about how I'd build that sandbox when it has to run in a self-hosted deployment: on a customer's server, with hardware you don't choose and nobody on hand to babysit it.
 
-## A separate service with nothing worth stealing
+## Make the sandbox a separate service with nothing worth stealing
 
-The sandbox is its own FastAPI service, the sandbox broker. The backend never runs model-written code itself. When the agent calls `sandbox_run_python`, the backend mints a short-lived HMAC grant — subject, expiry, nonce, a capability (`python.exec` or `workspace.write`), and the chat session key — with a two-minute TTL. The broker checks the signature, expiry, and capability before it does anything else.
+The API process should never execute model-written code itself. Put execution behind a separate service — call it the sandbox broker — and have the API mint a short-lived signed grant for each request: who it's for, when it expires, which capability it covers (run code, or write a file into the workspace), and which session it belongs to. The broker checks the signature, the expiry, and the capability before anything else.
 
-One honest caveat: the broker doesn't keep a nonce table, so grants are short-lived, not single-use. Two minutes is the replay window. I'd rather say that plainly than imply a guarantee we don't enforce.
+Be honest about what that grant gives you. If the broker doesn't keep a record of used nonces, grants are short-lived, not single-use, and the TTL is your replay window. That's a reasonable trade for a stateless broker, as long as nobody claims the stronger guarantee.
 
-What the guest gets is just as important as what it doesn't. Guests never mount the application data volume, the browser profiles, or the artifact store. They never receive Redis credentials or the encryption key. The broker also has a hard list of mount prefixes it will refuse — `/data`, `/home`, `/root`, `/etc`, `/var/run/docker.sock`, and our own state directory — so a configuration mistake can't quietly hand the guest the host.
+What the guest *doesn't* get matters as much. It shouldn't mount the application's data volume, any browser profiles, or the artifact store. It shouldn't receive the Redis password or any encryption key. I'd also give the broker a hard-coded list of host paths it refuses to mount — `/etc`, `/root`, `/home`, the Docker socket, and the application's own state directory — so a configuration mistake can't quietly hand the guest the host.
 
-## The runtime is chosen by what the host can actually do
+## Pick the runtime from what the host can actually do
 
-We don't control the client's hardware, so the broker picks the strongest runtime available and tells you which one it picked:
+You don't control the customer's hardware, so choose the strongest isolation available at startup and report which one you got:
 
 ```python
-def select_runtime(host) -> Runtime:
-    if host.has_kvm and boxlite_ok():
-        return Runtime("microvm", reason="BoxLite on /dev/kvm")
+def pick_runtime(host) -> Runtime:
+    if host.has_kvm:
+        return Runtime("microvm", reason="KVM available")
     if host.has_runsc:
-        return Runtime("isolated-container", reason="gVisor runsc")
-    if settings.SANDBOX_ALLOW_LOCAL_RUNTIME:
-        return Runtime("docker-container", reason="local opt-in, dev only")
+        return Runtime("gvisor", reason="runsc registered with Docker")
+    if settings.allow_plain_docker:
+        return Runtime("docker", reason="operator opt-in, dev only")
     return Runtime.unavailable("no isolating runtime on this host")
 ```
 
-A BoxLite microVM when the host exposes `/dev/kvm`. Otherwise a gVisor container. Plain Docker only when an operator explicitly opts in, and the health check labels it `docker-container` so nobody mistakes it for isolation. If none of those exist, the tool is unavailable and the agent says so.
+A microVM when the host exposes `/dev/kvm`. Otherwise [gVisor](https://gvisor.dev/docs/), which intercepts syscalls in a user-space kernel. Plain Docker only if an operator explicitly opts in, and labelled as such in the health check so nobody mistakes it for isolation. If none of those is available, the tool is unavailable and the agent says so.
 
-The container-level flags are the boring list you'd expect, and every one of them is there on purpose:
+Then the container flags. They're a boring list, and every item is there for a reason:
 
 ```python
 client.containers.run(
-    "python:slim",
+    "python:3.12-slim",
     command=["sleep", "infinity"],
     network_mode="none",
     read_only=True,
@@ -63,49 +63,45 @@ client.containers.run(
 )
 ```
 
-Code runs through `exec` into that sleeping container. A timeout (30 seconds by default, 120 at most) kills the whole container with exit code 124, not just the process. The workspace survives because it lives outside the container.
+Code runs by `exec`-ing into that sleeping container. On timeout, kill the whole container, not just the Python process — a forked child or a stuck thread shouldn't outlive the request. Keep the workspace outside the container so it survives the kill.
 
-<ArticleDiagram stem="02-ai-code-sandboxes-docker-security-boundary" alt="Fig. 1 — The backend mints a grant and writes tool data into the workspace. The broker verifies the grant, checks memory admission, and runs code in the strongest runtime the host supports, with no network." />
+<ArticleDiagram stem="02-ai-code-sandboxes-docker-security-boundary" alt="Fig. 1 — The API mints a short-lived grant and writes tool data into the workspace. The broker verifies the grant, checks memory, and runs code in the strongest runtime the host supports, with no network." />
 
 ## No network, and no exception path
 
-Early drafts of this design had a "network profile" the agent could ask for. We dropped it. The guest has `network_mode: none` and there is no way to open it.
+It's tempting to design a "network profile" the agent can request when it needs to fetch something. I'd leave it out. The guest gets `network_mode: none`, and there is no way to open it.
 
-The agent still needs data, so the backend writes it in. When a tool returns a large result — a quote history, a fetched web page, a browser download — the harness materializes it as a file in the session's workspace under `/workspace/tools`, `/web`, or `/runs`, and keeps an `INDEX.json` the code can read. The model doesn't have to paste 40,000 rows into a code cell, and the sandbox never needs credentials to fetch anything.
+The agent still needs data, so the trusted side writes it in. When a tool returns something large — a price history, a fetched web page, a downloaded file — the harness saves it as a file in the session's workspace and keeps a small index the code can read. The model doesn't have to paste 40,000 rows into a code cell, and the sandbox never needs credentials to fetch anything.
 
-Deliverables go in `/workspace/user/out`. The broker validates every path it hands back as a download, and as of October a path outside the allowed workspace raises an error instead of being skipped quietly.
+Output deserves the same suspicion as input. Anything the code produces for the user should be in one deliverables directory, and every path handed back for download should be resolved and checked against it. A path outside that directory is an error, not something to skip quietly.
 
 ## Capacity is a memory problem
 
-On a client's single VPS, what runs out first is memory, not CPU and not container count. So admission is a formula, not a feeling:
+On a single machine, what runs out first is memory — not CPU, and not the number of containers. So admission should be a formula, not a hope:
 
 ```python
-slots = int((mem_available / 1.2 - reserve_mib) / per_guest_mib)
-# reserve_mib = 1024, per_guest_mib = 512
+def free_slots(mem_available_mib, reserve_mib=1024, per_guest_mib=512):
+    return int((mem_available_mib / 1.2 - reserve_mib) // per_guest_mib)
 ```
 
-Two details matter more than the formula. Guests that are still starting count against capacity before their expensive startup finishes. Otherwise a burst of requests all pass admission and then all start at once. And existing guests are charged their full memory cap, not their current usage, because a guest that's idle now can allocate its full 512 MiB a second later.
+Two details matter more than the formula. Count guests that are still *starting* against capacity before their expensive startup finishes, or a burst of requests will all pass admission and then all start at once. And charge existing guests their full memory limit, not their current usage — a guest that's idle now can allocate its whole limit a second later.
 
-On top of that there's a global ceiling of 16 boxes, one slot per user-and-session, and a 90-second idle TTL. When a session goes idle, the broker exports its workspace as a tarball to an ephemeral volume and frees the slot. The next request restores it.
+Add a global ceiling, one slot per user session, and an idle TTL. When a session goes idle, snapshot its workspace to a tarball and free the slot. The next request restores it.
 
-## Bugs that taught me something
+## Bugs worth designing against
 
-**"Local mode" used to be a subprocess.** Until September, the dev-only local runtime ran Python as a subprocess inside the broker itself. The comment said "not a security boundary", which was true and not reassuring. We rewrote it as a real container with no network and all capabilities dropped. Docker Desktop can't bind a named-volume subdirectory into a child container, so local mode keeps the workspace inside the container and moves files in and out through Docker's archive API. It's slower and it's correct.
+**A "local mode" that's really a subprocess.** Development setups often run untrusted code as a plain subprocess for convenience, with a comment saying it isn't a security boundary. That comment won't stop anyone shipping it. Make even the dev runtime a real container with no network and no capabilities. On Docker Desktop you may not be able to bind-mount a subdirectory of a named volume into a child container. Keeping the workspace inside the container and moving files with Docker's archive API is slower, but it's correct.
 
-**BoxLite without nested KVM panics.** On Docker Desktop, BoxLite would panic inside its own initialisation before our fallback logic got a chance to run. Now the fallback order never puts BoxLite ahead of a runtime that's already been selected. Upgrading to BoxLite 0.10 brought its own list: exec output has to be read from the streams rather than from `wait()`, setting the working directory fails if it doesn't exist yet, and on Ubuntu hosts with AppArmor the broker has to run privileged for bubblewrap to work.
+**Fallbacks that crash before they fall back.** Some microVM runtimes panic during initialisation on hosts without nested virtualisation, before your fallback logic gets a chance to run. Probe each runtime in isolation, and never let a runtime that failed its probe go ahead of one that passed.
 
-That last point deserves to be said clearly. The broker is privileged and holds the Docker socket, so it's a high-trust component. The isolation is the guest boundary — the microVM or gVisor — not the broker. The broker's job is to be small and to refuse things.
+**The privileged broker.** Depending on the runtime and the host's AppArmor setup, the broker may need to run privileged *and* hold the Docker socket. Say so plainly: the broker is a high-trust component. The isolation boundary is the guest — the microVM or gVisor — not the broker. The broker's job is to be small and to refuse things.
 
-**Write returned 200, read returned 404.** In mid-October an analyst imported a CSV the browser agent had downloaded. The import returned HTTP 200. Opening the file straight after returned 404.
+**A write that returns 200, then a read that returns 404.** This is the one I'd test for specifically. Suppose idle snapshots are made by running `tar` inside the guest and writing the archive into the workspace directory itself. Tar notices the file changing under it and exits with status 1 ("file changed as we read it"). If the pool swallows that exit code, it saves a stale copy and acknowledges the import anyway. The user uploads a file, gets a success, and can't open it.
 
-BoxLite was writing its snapshot archive, `/workspace/.snapshot.tgz`, *inside the directory it was archiving*. GNU tar exited with status 1 — "file changed as we read it" — the pool swallowed the error, saved a stale copy of the host mirror, and acknowledged the import anyway.
+The fixes generalise: write archives somewhere outside the tree being archived; treat a non-zero `tar` exit as the failure it is; acknowledge an import only after reading back its size and hash; and make reads take the same lock as writes. While you're there, copy deliverables explicitly rather than trusting a best-effort snapshot to include them. If a restore fails, keep the old workspace and say so, rather than quietly giving the user an empty one.
 
-The fix: archives go to unique paths in the guest's `/tmp`; a tar failure stays a failure; an import is only acknowledged after the host-side size and SHA-256 match what was written; and reads take the same session lock as writes. While we were in there we found that best-effort snapshot export had also dropped deliverables now and then, so `/user/out` is copied explicitly. A related change means a failed restore now says "retained workspace was preserved" instead of starting the user on an empty workspace.
+## Evidence for computed numbers
 
-## Calculators with receipts
+One more idea I like. If the sandbox exposes trusted helper functions — a fee calculator, a position-sizing formula — have each call append a line to a log inside the workspace: function, version, a hash of the input, a hash of the output, and status. If the run is killed before the log is finalised, report the log as incomplete rather than pretending it's whole.
 
-The newest piece is extension functions. An operator can enable typed calculators — position sizing, a VWAP variant, a fee schedule — that show up inside the guest as `ananta.ext.<name>(...)`. Every call appends a line to `runs/extension_calls.jsonl` with the tool, version, input hash, output hash, and status. If a hard kill stops the run before that file is finalised, the result reports `extension_calls_complete=false` rather than pretending the log is whole.
-
-The model can *propose* a new calculator: standard-library-only source, up to 20,000 characters, with 1 to 20 test fixtures. Passing the fixtures doesn't enable it. Only the owner, through an approval card, can turn on that exact evaluated version. No model, child run, or planning mode can do it on its own.
-
-Those receipts are evidence of a calculation, not authorization and not a tamper-proof attestation. Being precise about that is a lot of what this work has turned out to be.
+That gives you evidence of *which* calculation produced a number. It isn't authorization and it isn't a tamper-proof attestation, and it's worth saying both in the design doc. Being precise about what a mechanism doesn't prove is a lot of what sandbox work turns out to be. The same theme comes up with [browser agents](/blog/browser-agents-identity-infrastructure/), where the thing being protected is an identity rather than a filesystem.

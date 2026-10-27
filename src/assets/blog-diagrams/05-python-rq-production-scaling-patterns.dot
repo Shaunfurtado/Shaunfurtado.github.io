@@ -1,18 +1,17 @@
 digraph rq {
 rankdir=TB;
-api [label="API admission"];
-sql [label="SQL\nRunDispatchRecord\nlane = build hash", class="key"];
-q [label="RQ lanes\nparent · workflow · child"];
-w [label="SimpleWorker process\n2 heartbeats / 5s"];
-run [label="agent run\nattempt + epoch fence"];
-rec [label="reconciler\nevery 120s"];
-cron [label="scheduler\nleader lease + SQL CAS"];
-api -> sql [label="1. intent"];
-sql -> q [label="2. enqueue run_id"];
-q -> w;
-w -> run;
-run -> sql [label="events · result"];
-rec -> q [label="re-enqueue / re-pin", style=dashed];
+api [label="API"];
+sql [label="SQL run row\nintent + lane", class="key"];
+q [label="RQ queues\nparent · child · workflow"];
+w [label="SimpleWorker process\nheartbeats"];
+run [label="run\nCAS claim, fenced"];
+rec [label="reconciler"];
+cron [label="scheduler\nlease + SQL CAS"];
+api -> sql [label="1. commit"];
+sql -> q [label="2. enqueue id"];
+q -> w -> run;
+run -> sql [label="result"];
 sql -> rec [style=dashed];
-cron -> sql [label="occurrence row"];
+rec -> q [label="re-enqueue", style=dashed];
+cron -> sql [label="occurrence"];
 }
